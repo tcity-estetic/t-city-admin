@@ -792,17 +792,17 @@ function renderBooking(){
   const c=bookingClient(b),car=bookingCar(b);
   shell('ЗАПИСЬ',`
     <div class="eyebrow">${fmtDate(b.date)} · ${b.time}</div>
-    <h1 class="h1">${car?.name||'АВТОМОБИЛЬ'}</h1>
-    <p class="lead">${c?.name||'—'} · ${car?.plate||'—'}</p>
+    <h1 class="h1">${car?.name||b.carName||'АВТОМОБИЛЬ'}</h1>
+    <p class="lead">${c?.name||b.clientName||'—'} · ${car?.plate||b.plate||'—'}</p>
     <div class="toolbar">
-      ${['waiting','work','ready'].map(s=>`<button class="action small ${b.status===s?'primary':''}" data-status="${s}">${STATUS[s].name}</button>`).join('')}
+      ${['waiting','work','ready'].map(st=>`<button class="action small ${b.status===st?'primary':''}" data-status="${st}">${STATUS[st].name}</button>`).join('')}
     </div>
     <div class="section-title">ИНФОРМАЦИЯ</div>
     <div class="kv">
-      <div class="kv-row"><span>Клиент</span><span>${c?.name||'—'}</span></div>
+      <div class="kv-row"><span>Клиент</span><span>${c?.name||b.clientName||'—'}</span></div>
       <div class="kv-row"><span>Телефон</span><span>${c?.phone||'—'}</span></div>
-      <div class="kv-row"><span>Автомобиль</span><span>${car?.name||'—'}</span></div>
-      <div class="kv-row"><span>Госномер</span><span>${car?.plate||'—'}</span></div>
+      <div class="kv-row"><span>Автомобиль</span><span>${car?.name||b.carName||'—'}</span></div>
+      <div class="kv-row"><span>Госномер</span><span>${car?.plate||b.plate||'—'}</span></div>
       <div class="kv-row"><span>Дата / время</span><span>${fmtDate(b.date)} · ${b.time}</span></div>
       <div class="kv-row"><span>Услуги</span><span>${servicesText(b)}</span></div>
       <div class="kv-row"><span>Стоимость</span><span>${money(b.total)}</span></div>
@@ -814,80 +814,40 @@ function renderBooking(){
     <div class="rule"></div>
     <div class="section-title">ПРЕДПОЧТЕНИЯ КЛИЕНТА</div>
     <div class="kv">${(c?.preferences||[]).map(p=>`<div class="kv-row"><span>${p.key}</span><span>${p.value}</span></div>`).join('')||'<div class="empty">Предпочтений пока нет.</div>'}</div>
-    ${b.status==='ready'?`
-      <div class="finalize-box">
-        <strong>АВТОМОБИЛЬ ВЫДАН?</strong>
-        <span>После завершения запись исчезнет из «Сегодня», визит попадёт в историю клиента, а T-Бонусы будут списаны/начислены автоматически.</span>
-      </div>
-      <button class="action primary" id="finishVisit">ЗАВЕРШИТЬ ВИЗИТ</button>
-    `:''}
+    ${b.status==='ready'?`<div class="finalize-box"><strong>АВТОМОБИЛЬ ВЫДАН?</strong><span>После завершения сервер создаст визит и автоматически рассчитает T-Бонусы.</span></div><button class="action primary" id="finishVisit">ЗАВЕРШИТЬ ВИЗИТ</button>`:''}
     <div class="toolbar">
-      <button class="action" id="editBooking">ИЗМЕНИТЬ / ПЕРЕНЕСТИ</button>
+      <button class="action" id="editBooking" ${b.status!=='waiting'?'disabled':''}>ИЗМЕНИТЬ / ПЕРЕНЕСТИ</button>
       <button class="action danger" id="cancelBooking">ОТМЕНИТЬ ЗАПИСЬ</button>
     </div>
   `);
-  view.querySelectorAll('[data-status]').forEach(x=>x.addEventListener('click',()=>{
-    b.status=x.dataset.status;save();renderBooking();
+  view.querySelectorAll('[data-status]').forEach(x=>x.addEventListener('click',async()=>{
+    if(x.dataset.status===b.status)return;
+    try{
+      await api(`/api/admin/bookings/${b.id}/status`,{method:'PATCH',body:jsonBody({status:x.dataset.status})});
+      await refreshState();renderBooking();
+    }catch(err){alert(err.message)}
   }));
   const finishBtn=document.getElementById('finishVisit');
-  if(finishBtn) finishBtn.addEventListener('click',()=>finalizeVisit(b));
-  document.getElementById('editBooking').addEventListener('click',()=>openBookingEditor(b));
-  document.getElementById('cancelBooking').addEventListener('click',()=>{
-    if(!confirm('Отменить эту запись? Время будет освобождено.')) return;
-    state.bookings=state.bookings.filter(x=>x.id!==b.id);
-    state.adminNotifications.unshift({id:uid('n'),type:'booking',title:'Запись отменена',text:`${c?.name||'Клиент'} · ${car?.name||'автомобиль'} · ${fmtDate(b.date)} ${b.time}`,date:new Date().toISOString(),read:false});
-    save();back();
+  if(finishBtn)finishBtn.addEventListener('click',()=>finalizeVisit(b));
+  const editBtn=document.getElementById('editBooking');
+  if(editBtn&&!editBtn.disabled)editBtn.addEventListener('click',()=>openBookingEditor(b));
+  document.getElementById('cancelBooking').addEventListener('click',async()=>{
+    if(!confirm('Отменить эту запись? Время будет освобождено.'))return;
+    try{
+      await api(`/api/admin/bookings/${b.id}/status`,{method:'PATCH',body:jsonBody({status:'cancelled'})});
+      await refreshState();back();
+    }catch(err){alert(err.message)}
   });
 }
-function finalizeVisit(b){
-  const c=bookingClient(b),car=bookingCar(b);
-  if(!c||!car)return;
+async function finalizeVisit(b){
   if(!confirm('Завершить визит? Автомобиль будет считаться выданным клиенту.'))return;
-
-  const wallet=ensureWallet(c);
-  const requested=Math.max(0,Math.round(Number(b.bonusUse)||0));
-  const used=Math.min(requested,Number(wallet.balance)||0,Math.round(Number(b.total)||0));
-  if(used) walletDebit(c,used,`Оплата визита · ${car.name}`);
-
-  const paidRub=Math.max(0,Math.round((Number(b.total)||0)-used));
-  const cashback=Math.round(paidRub*0.05);
-  if(cashback) walletCredit(c,cashback,`5% за визит · ${car.name}`);
-
-  const visit={
-    bookingId:b.id,date:b.date,car:car.name,services:servicesText(b),price:Number(b.total)||0,
-    paidRub,bonusUse:used,bonusEarned:cashback
-  };
-  c.visits.unshift(visit);
-  state.completedBookings.push({...clone(b),completedAt:new Date().toISOString(),paidRub,bonusUse:used,bonusEarned:cashback});
-  state.bookings=state.bookings.filter(x=>x.id!==b.id);
-
-  // Реальный денежный доход — только рублёвая часть.
-  state.transactions.push({
-    id:uid('t'),bookingId:b.id,date:b.date,type:'income',
-    title:`${car.name} · завершённый визит`,amount:paidRub
-  });
-
-  state.adminNotifications.unshift({
-    id:uid('n'),type:'completed',clientId:c.id,title:'Визит завершён',
-    text:`${c.name} · ${car.name} · ${money(b.total)} · +${cashback} T`,
-    date:new Date().toISOString(),read:false
-  });
-
-  save();
-  openSheet(`
-    <div class="sheet-head"><h3>ВИЗИТ ЗАВЕРШЁН</h3><button class="sheet-close" id="closeSheet">×</button></div>
-    <div class="kv" style="margin-top:14px">
-      <div class="kv-row"><span>Клиент</span><span>${c.name}</span></div>
-      <div class="kv-row"><span>Автомобиль</span><span>${car.name}</span></div>
-      <div class="kv-row"><span>Оплачено рублями</span><span>${money(paidRub)}</span></div>
-      <div class="kv-row"><span>Списано T-Бонусов</span><span>${new Intl.NumberFormat('ru-RU').format(used)} T</span></div>
-      <div class="kv-row"><span>Начислено 5%</span><span>+${new Intl.NumberFormat('ru-RU').format(cashback)} T</span></div>
-      <div class="kv-row"><span>Баланс клиента</span><span>${new Intl.NumberFormat('ru-RU').format(ensureWallet(c).balance)} T</span></div>
-    </div>
-    <button class="action primary" id="finishToHome">ГОТОВО</button>
-  `);
-  document.getElementById('closeSheet').addEventListener('click',()=>{closeSheet();go('home',{},false)});
-  document.getElementById('finishToHome').addEventListener('click',()=>{closeSheet();go('home',{},false)});
+  try{
+    const r=await api(`/api/admin/bookings/${b.id}/finish`,{method:'POST',body:jsonBody({final_total_rub:Number(b.total)||0,bonus_spent:Number(b.bonusUse)||0})});
+    await refreshState();
+    openSheet(`<div class="sheet-head"><h3>ВИЗИТ ЗАВЕРШЁН</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="kv"><div class="kv-row"><span>Итого</span><span>${money(r.final_total_rub)}</span></div><div class="kv-row"><span>Оплата рублями</span><span>${money(r.cash_paid_rub)}</span></div><div class="kv-row"><span>Списано T-Бонусов</span><span>${r.bonus_spent||0} T</span></div><div class="kv-row"><span>Начислено 5%</span><span>+${r.bonus_earned||0} T</span></div></div><button class="action primary" id="finishToHome">ГОТОВО</button>`);
+    document.getElementById('closeSheet').addEventListener('click',()=>{closeSheet();go('home',{},false)});
+    document.getElementById('finishToHome').addEventListener('click',()=>{closeSheet();go('home',{},false)});
+  }catch(err){alert(err.message)}
 }
 
 function openBookingEditor(b){
@@ -945,6 +905,85 @@ function openBookingEditor(b){
 }
 
 /* Real client profile */
+function renderClients(){
+  shell('КЛИЕНТЫ',`
+    <div class="eyebrow">БАЗА КЛИЕНТОВ</div>
+    <h1 class="h1">КЛИЕНТЫ</h1>
+    <input class="search" id="clientSearch" placeholder="Имя, телефон, госномер...">
+    <button class="action primary" id="addClient">+ ДОБАВИТЬ КЛИЕНТА</button>
+    <div class="client-list" id="clientList"></div>
+  `);
+  const draw=(q='')=>{
+    const needle=q.trim().toLowerCase();
+    const arr=state.clients.filter(c=>{
+      const cars=(c.cars||[]).map(x=>`${x.name} ${x.plate}`).join(' ');
+      return `${c.name} ${c.phone} ${cars}`.toLowerCase().includes(needle);
+    });
+    document.getElementById('clientList').innerHTML=arr.map(c=>`
+      <button class="client-row" data-client="${c.id}">
+        <div class="client-row-top"><strong>${escapeHtmlAdmin(c.name)}${c.vip?'<span class="vip-badge">VIP</span>':''}</strong><span class="arrow">→</span></div>
+        <div class="client-meta">${escapeHtmlAdmin(c.phone||'—')}<br>${(c.cars||[]).length} авто · ${(c.visits||[]).length} посещений${c.birthday?` · ДР ${c.birthday.split('-').slice(1).reverse().join('.')}`:''}</div>
+      </button>`).join('')||'<div class="empty">Ничего не найдено.</div>';
+    document.querySelectorAll('[data-client]').forEach(x=>x.addEventListener('click',()=>go('client',{id:x.dataset.client})));
+  };
+  draw();
+  document.getElementById('clientSearch').addEventListener('input',e=>draw(e.target.value));
+  document.getElementById('addClient').addEventListener('click',()=>go('addClient'));
+}
+
+function renderClient(){
+  const c=client(route.params.id);if(!c){back();return}
+  const tab=route.params.tab||'main';
+  const initials=(c.name||'К').split(/\s+/).slice(0,2).map(x=>x[0]||'').join('');
+  shell('ПРОФИЛЬ КЛИЕНТА',`
+    <div class="profile-hero">
+      <div class="avatar">${escapeHtmlAdmin(initials)}</div>
+      <div><h2>${escapeHtmlAdmin(c.name)}</h2><p>${escapeHtmlAdmin(c.phone||'—')}<br>${escapeHtmlAdmin(c.telegram||'—')}</p></div>
+    </div>
+    <div class="tabs">
+      ${[['main','ОСНОВНОЕ'],['cars','АВТО'],['visits','ВИЗИТЫ'],['prefs','ПРЕДПОЧТЕНИЯ'],['reminders','НАПОМИНАНИЯ'],['history','ИСТОРИЯ']].map(([id,n])=>`<button class="tab ${tab===id?'active':''}" data-tab="${id}">${n}</button>`).join('')}
+    </div>
+    <div id="clientTab"></div>
+  `);
+  document.querySelectorAll('[data-tab]').forEach(x=>x.addEventListener('click',()=>{route.params.tab=x.dataset.tab;renderClient()}));
+  const box=document.getElementById('clientTab');
+  if(tab==='main')renderClientMain(c,box);
+  if(tab==='cars')renderClientCars(c,box);
+  if(tab==='visits')renderClientVisits(c,box);
+  if(tab==='prefs')renderClientPrefs(c,box);
+  if(tab==='reminders')renderClientReminders(c,box);
+  if(tab==='history')renderClientHistory(c,box);
+}
+
+function renderClientCars(c,box){
+  box.innerHTML=`<button class="action primary" id="addCar">+ ДОБАВИТЬ АВТОМОБИЛЬ</button>${(c.cars||[]).map(car=>`<button class="car-card" data-car="${car.id}" style="width:100%;padding:0;text-align:left;color:inherit"><div class="car-image"><img src="${car.image||''}" alt="${escapeHtmlAdmin(car.name)}"></div><div class="car-copy"><strong>${escapeHtmlAdmin(car.name)}</strong><span>${escapeHtmlAdmin(car.plate)} · ${escapeHtmlAdmin(car.color||'—')}</span></div></button>`).join('')||'<div class="empty">Автомобилей пока нет.</div>'}`;
+  box.querySelectorAll('[data-car]').forEach(x=>x.addEventListener('click',()=>go('clientCar',{clientId:c.id,carId:x.dataset.car})));
+  document.getElementById('addCar').addEventListener('click',()=>openCarEditor(c,null));
+}
+
+function renderClientCar(){
+  const c=client(route.params.clientId),car=carById(c,route.params.carId);
+  if(!c||!car){back();return}
+  shell('АВТОМОБИЛЬ',`
+    <div class="car-card"><div class="car-image"><img src="${car.image||''}" alt="${escapeHtmlAdmin(car.name)}"></div><div class="car-copy"><strong>${escapeHtmlAdmin(car.name)}</strong><span>${escapeHtmlAdmin(car.plate)}</span></div></div>
+    <div class="kv"><div class="kv-row"><span>Цвет</span><span>${escapeHtmlAdmin(car.color||'—')}</span></div><div class="kv-row"><span>Год</span><span>${escapeHtmlAdmin(car.year||'—')}</span></div><div class="kv-row"><span>Пробег</span><span>${escapeHtmlAdmin(car.mileage||'—')}</span></div><div class="kv-row"><span>VIN</span><span>${escapeHtmlAdmin(car.vin||'—')}</span></div></div>
+    <button class="action" id="editCar">ИЗМЕНИТЬ ИНФОРМАЦИЮ / ИЗОБРАЖЕНИЕ</button>
+    <button class="action danger" id="deleteCar">УДАЛИТЬ АВТОМОБИЛЬ</button>
+  `);
+  document.getElementById('editCar').addEventListener('click',()=>openCarEditor(c,car));
+  document.getElementById('deleteCar').addEventListener('click',()=>deleteClientCar(c,car));
+}
+
+function renderClientVisits(c,box){
+  box.innerHTML=(c.visits||[]).length?`<div class="today-list">${c.visits.map(v=>`<div class="booking-row"><div class="booking-row-top"><span style="flex:1"><strong>${escapeHtmlAdmin(v.car)}</strong><span class="booking-meta">${fmtDate(v.date)}<br>${escapeHtmlAdmin(v.services)}</span></span><span>${money(v.price)}</span></div></div>`).join('')}</div>`:'<div class="empty">История посещений пока пуста.</div>';
+}
+
+function renderClientHistory(c,box){
+  const chats=state.supportChats.filter(x=>x.clientId===c.id);
+  box.innerHTML=`<div class="section-title" style="margin-top:18px">ПОДДЕРЖКА</div>${chats.length?`<div class="chat-list">${chats.map(ch=>`<button class="chat-row ${ch.unread?'':'read'}" data-open-chat="${ch.id}" style="${ch.unread?'':'opacity:.42'}"><div class="chat-row-top"><strong>Диалог с T-CITY</strong><span class="arrow">→</span></div><div class="chat-meta">${ch.messages.length} сообщений</div></button>`).join('')}</div>`:'<div class="empty">Обращений в поддержку пока нет.</div>'}`;
+  box.querySelectorAll('[data-open-chat]').forEach(x=>x.addEventListener('click',()=>go('supportChat',{id:x.dataset.openChat})));
+}
+
 function renderClientMain(c,box){
   const total=(c.visits||[]).reduce((s,v)=>s+(Number(v.price)||0),0);
   box.innerHTML=`<div class="metrics"><div class="metric"><strong>${(c.visits||[]).length}</strong><span>посещений</span></div><div class="metric"><strong>${money(total)}</strong><span>за всё время</span></div></div>
@@ -974,7 +1013,7 @@ function deleteClientCar(c,car){
   openSheet(`<div class="sheet-head"><h3>УДАЛИТЬ АВТОМОБИЛЬ?</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="birthday-card"><strong>${car.name} · ${car.plate}</strong><p>История визитов и статистика сохранятся.</p></div><button class="action danger" id="confirmDeleteCar">УДАЛИТЬ АВТОМОБИЛЬ</button><button class="action" id="cancelDeleteCar">ОСТАВИТЬ</button>`);document.getElementById('closeSheet').addEventListener('click',closeSheet);document.getElementById('cancelDeleteCar').addEventListener('click',closeSheet);document.getElementById('confirmDeleteCar').addEventListener('click',async()=>{try{await api(`/api/admin/cars/${car.id}`,{method:'DELETE'});closeSheet();await refreshState();go('client',{id:c.id,tab:'cars'},false)}catch(err){alert(err.message)}});
 }
 function renderClientPrefs(c,box){
-  box.innerHTML=`<div class="section-title" style="margin-top:18px">СВОБОДНЫЕ ПРЕДПОЧТЕНИЯ</div><p class="lead">Предпочтения загружены из PostgreSQL.</p><div class="kv">${(c.preferences||[]).map(p=>`<div class="kv-row"><span>${p.key}</span><span>${p.value}</span></div>`).join('')||'<div class="empty">Предпочтений пока нет.</div>'}</div><div class="mini-note">Редактирование предпочтений из ADMIN добавим отдельным серверным маршрутом; сейчас реальные данные доступны для просмотра.</div>`;
+  box.innerHTML=`<div class="section-title" style="margin-top:18px">СВОБОДНЫЕ ПРЕДПОЧТЕНИЯ</div><p class="lead">Предпочтения загружены из PostgreSQL.</p><div class="kv">${(c.preferences||[]).map(p=>`<div class="kv-row"><span>${p.key}</span><span>${p.value}</span></div>`).join('')||'<div class="empty">Предпочтений пока нет.</div>'}</div>`;
 }
 function renderClientReminders(c,box){
   box.innerHTML=`<div class="section-title" style="margin-top:18px">СЕРВИСНЫЕ НАПОМИНАНИЯ</div><p class="lead">Напоминания хранятся на сервере.</p><div>${(c.serviceReminders||[]).map(r=>`<div class="reminder-row"><span><strong>${r.text}</strong><span>${fmtDate(r.date)}</span></span><button class="action small danger" data-remove-reminder="${r.id}">×</button></div>`).join('')||'<div class="empty">Напоминаний пока нет.</div>'}</div><div class="field"><label>Дата</label><input type="date" id="reminderDate"></div><div class="field"><label>Что напомнить</label><input id="reminderText" placeholder="Например: предложить обновить керамику"></div><button class="action" id="addReminder">+ ДОБАВИТЬ НАПОМИНАНИЕ</button>`;
@@ -987,6 +1026,25 @@ function renderAddClient(){
 }
 
 /* Support / mailing / accounting */
+function renderSupport(){
+  const chats=[...state.supportChats].sort((a,b)=>{
+    if(Boolean(a.unread)!==Boolean(b.unread))return a.unread?-1:1;
+    return String(b.lastActivity||'').localeCompare(String(a.lastActivity||''));
+  });
+  shell('ПОДДЕРЖКА',`
+    <div class="eyebrow">ДИАЛОГИ T-CITY</div>
+    <h1 class="h1">ПОДДЕРЖКА</h1>
+    <p class="lead">Все диалоги сохраняются. Чаты, которые ждут ответа, всегда находятся выше отвеченных.</p>
+    <div class="chat-list" style="margin-top:18px">
+      ${chats.map(ch=>{
+        const c=client(ch.clientId),last=ch.messages[ch.messages.length-1];
+        return `<button class="chat-row ${ch.unread?'':'read'}" data-chat="${ch.id}" style="${ch.unread?'':'opacity:.42'}"><div class="chat-row-top"><strong>${escapeHtmlAdmin(c?.name||'Клиент')}</strong>${ch.unread?'<span class="notice-dot"></span>':''}</div><div class="chat-meta">${escapeHtmlAdmin(last?.text||'')}</div></button>`;
+      }).join('')||'<div class="empty">Диалогов пока нет.</div>'}
+    </div>
+  `);
+  view.querySelectorAll('[data-chat]').forEach(x=>x.addEventListener('click',()=>go('supportChat',{id:x.dataset.chat})));
+}
+
 function renderSupportChat(){
   const ch=state.supportChats.find(x=>x.id===route.params.id);if(!ch){back();return}const c=client(ch.clientId);shell(c?.name||'ПОДДЕРЖКА',`<div class="eyebrow">ОТВЕТ ОТ ИМЕНИ T-CITY</div><h1 class="h1">${c?.name||'КЛИЕНТ'}</h1><p class="lead">${c?.phone||'—'}</p><div class="message-list" id="messages">${ch.messages.map(m=>`<div class="msg ${m.side==='client'?'client':'admin'}">${m.text}<span class="msg-time">${m.time||''} · ${m.side==='client'?'КЛИЕНТ':'T-CITY'}</span></div>`).join('')}</div><div class="composer"><input id="replyText" placeholder="Ответить от имени T-CITY..."><button id="sendReply">↑</button></div>`);document.getElementById('sendReply').addEventListener('click',async()=>{const text=document.getElementById('replyText').value.trim();if(!text)return;try{await api(`/api/admin/support/${ch.id}/reply`,{method:'POST',body:jsonBody({message:text})});await refreshState();renderSupportChat()}catch(err){alert(err.message)}});
 }
@@ -1065,6 +1123,106 @@ function openCatalogPackageEditor(item){
   openSheet(`<div class="sheet-head"><h3>ИЗМЕНИТЬ ПАКЕТ</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Название</label><input id="catalogPackageName" value="${escapeHtmlAdmin(item.name)}"></div><div class="field"><label>Цена · ₽</label><input id="catalogPackagePrice" value="${catalogPriceInput(item)}" placeholder="1000 или 1000/1200/1400"></div><div class="catalog-price-help">Одно число — одинаковая цена. Три числа: седан / кроссовер / внедорожник.</div><div class="field"><label>Содержание пакета</label><div class="catalog-service-picks">${services.map(s=>`<label class="service-check"><input type="checkbox" data-package-service="${s.code}" ${included.has(s.code)?'checked':''}><span>${escapeHtmlAdmin(s.name)}${!s.enabled?' · ВЫКЛ':''}</span><em>${catalogPriceLabel(s)}</em></label>`).join('')}</div></div><button class="action primary" id="saveCatalogPackage">СОХРАНИТЬ ПАКЕТ</button>`);
   document.getElementById('closeSheet').addEventListener('click',closeSheet);
   document.getElementById('saveCatalogPackage').addEventListener('click',async()=>{const name=document.getElementById('catalogPackageName').value.trim(),prices=parseCatalogPrice(document.getElementById('catalogPackagePrice').value),codes=[...sheet.querySelectorAll('[data-package-service]:checked')].map(x=>x.dataset.packageService);if(!name){alert('Укажите название пакета.');return}if(!prices){alert('Цена: одно число или три числа через /.');return}try{await api(`/api/admin/catalog/packages/${encodeURIComponent(item.code)}`,{method:'PATCH',body:jsonBody({name,price_sedan:prices.sedan,price_crossover:prices.crossover,price_suv:prices.suv,included_service_codes:codes})});closeSheet();await refreshState();renderCatalog()}catch(err){alert(err.message)}});
+}
+
+
+/* =========================================================
+   T-CITY ADMIN v0.6.1 · REAL BACKEND BRIDGE
+   ========================================================= */
+const API_BASE='https://194-87-130-62.sslip.io';
+const ADMIN_SESSION_KEY='tcity_admin_session_v1';
+const ADMIN_PENDING_LOGIN_KEY='tcity_admin_pending_login_v1';
+let adminSession=sessionStorage.getItem(ADMIN_SESSION_KEY)||'';
+let backendReady=false;
+let loginPollTimer=null;
+
+function save(){updateBell()}
+function generateScheduledAlerts(){/* server-backed */}
+async function resetDemo(){await refreshState(true)}
+
+async function api(path,options={}){
+  const headers=new Headers(options.headers||{});
+  if(options.body&&!headers.has('Content-Type'))headers.set('Content-Type','application/json');
+  if(adminSession)headers.set('Authorization',`Bearer ${adminSession}`);
+  const response=await fetch(API_BASE+path,{...options,headers});
+  let data=null;
+  try{data=await response.json()}catch(_){data={ok:false,error:`HTTP ${response.status}`}}
+  if(response.status===401){adminSession='';sessionStorage.removeItem(ADMIN_SESSION_KEY);backendReady=false}
+  if(!response.ok||data?.ok===false){const err=new Error(data?.error||`HTTP ${response.status}`);err.status=response.status;err.data=data;throw err}
+  return data;
+}
+function jsonBody(value){return JSON.stringify(value)}
+function safeDate(v){return v?String(v).slice(0,10):''}
+function isoPartsTyumen(v){
+  const d=new Date(v);
+  const a=new Intl.DateTimeFormat('en-CA',{timeZone:T_CITY_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d).reduce((o,x)=>{o[x.type]=x.value;return o},{});
+  return {date:`${a.year}-${a.month}-${a.day}`,time:`${a.hour}:${a.minute}`};
+}
+function imageForCar(row){
+  if(row.image_url)return row.image_url;
+  const byPlate={'А073СН172':'garage-passat.png','А937ХУ172':'garage-mercedes-cls-amg.png','У409МО72':'garage-polo.png','В620ОК172':'garage-lada-2112.png','В500ОР72':'garage-mercedes-cls.png'};
+  return byPlate[row.plate]||'';
+}
+function mapCar(row){return {id:row.id,name:row.make_model||'Автомобиль',plate:row.plate||'—',color:row.color||'—',year:row.year??'—',mileage:row.mileage!=null?`${new Intl.NumberFormat('ru-RU').format(row.mileage)} км`:'—',vin:row.vin||'—',image:imageForCar(row)}}
+function mapBonus(data){
+  const tx=(data.history||[]).map(x=>({id:x.id,type:x.type,amount:Number(x.amount)||0,title:x.description||'T-Бонусы',date:safeDate(x.created_at)}));
+  return {balance:Number(data.balance)||0,earnedTotal:tx.filter(x=>x.type==='credit').reduce((sum,x)=>sum+x.amount,0),spentTotal:tx.filter(x=>x.type==='debit').reduce((sum,x)=>sum+x.amount,0),transactions:tx};
+}
+async function hydrateState(){
+  const [cl,bookings,notices,support,entries,allTime,reminders,birthdays,accountSummary,catalog]=await Promise.all([
+    api('/api/admin/clients'),api('/api/admin/bookings'),api('/api/admin/notifications'),api('/api/admin/support'),
+    api('/api/admin/accounting/entries'),api('/api/admin/stats/all-time'),api('/api/admin/reminders'),api('/api/admin/birthdays'),api('/api/admin/accounting/summary'),api('/api/admin/catalog')
+  ]);
+  const detailPairs=await Promise.all((cl.clients||[]).map(async base=>{
+    const [d,b]=await Promise.all([api(`/api/admin/clients/${base.id}`),api(`/api/admin/clients/${base.id}/bonuses`)]);
+    return [base,d,b];
+  }));
+  const reminderRows=reminders.reminders||[];
+  const clients=detailPairs.map(([base,d,b])=>{
+    const c=d.client||base,cars=(d.cars||[]).map(mapCar);
+    const visits=(d.visits||[]).map(v=>({id:v.id,date:safeDate(v.completed_at),car:v.make_model||cars.find(x=>x.id===v.car_id)?.name||'Автомобиль',services:'Визит T-CITY',price:Number(v.total_rub)||0}));
+    const prefs=(d.preferences||[]).map(x=>({key:x.name,value:x.value}));
+    return {id:c.id,name:[c.first_name,c.last_name].filter(Boolean).join(' ')||c.telegram_username||'Клиент',phone:c.phone||'—',telegram:c.telegram_username?`@${String(c.telegram_username).replace(/^@/,'')}`:'—',notes:c.internal_note||'',birthday:safeDate(c.birthday),vip:Boolean(c.vip),preferences:prefs,cars,visits,notifications:[],wallet:mapBonus(b),serviceReminders:reminderRows.filter(r=>r.client_id===c.id).map(r=>{const z=isoPartsTyumen(r.remind_at);return {id:r.id,date:z.date,text:r.message,carId:r.car_id||null,adminAlerted:Boolean(r.sent)}})};
+  });
+  const carLookup=new Map();clients.forEach(c=>(c.cars||[]).forEach(car=>carLookup.set(car.id,{c,car})));
+  const mappedBookings=(bookings.bookings||[]).map(b=>{
+    const z=isoPartsTyumen(b.starts_at);
+    return {id:b.id,clientId:b.client_id,carId:b.car_id,date:z.date,time:z.time,duration:Math.max(1,Math.round((Number(b.duration_minutes)||60)/60)),status:b.status,serviceIds:[],serverServices:Array.isArray(b.services)?b.services:[],total:Number(b.preliminary_total_rub)||0,bonusUse:Number(b.bonus_spent)||0,comment:b.comment||'',server:b,carName:b.make_model,plate:b.plate,clientName:[b.first_name,b.last_name].filter(Boolean).join(' ')};
+  });
+  const noticeRows=(notices.notifications||[]).map(n=>({id:n.id,type:n.type||'notice',title:n.title,text:n.message||'',date:n.created_at,read:Boolean(n.read_at),clientId:n.client_id||null,bookingId:n.booking_id||null}));
+  (birthdays.birthdays||[]).forEach(b=>noticeRows.unshift({id:`birthday-live-${b.id}-${b.when_is}`,type:'birthday',title:b.when_is==='today'?'Сегодня день рождения':'Завтра день рождения',text:`${[b.first_name,b.last_name].filter(Boolean).join(' ')} · ${b.when_is==='today'?'поздравить сегодня':'подготовить поздравление'}`,date:new Date().toISOString(),read:false,clientId:b.id,virtual:true}));
+  const supportChats=(support.threads||[]).map(t=>({id:t.id,clientId:t.client_id,unread:Boolean(t.requires_admin),escalated:true,lastActivity:t.last_activity_at||t.updated_at||t.created_at||'',messages:(Array.isArray(t.messages)?t.messages:[]).map(m=>({side:m.sender==='client'?'client':'admin',text:m.message,time:new Date(m.created_at).toLocaleTimeString('ru-RU',{timeZone:T_CITY_TIMEZONE,hour:'2-digit',minute:'2-digit'})}))}));
+  const visitIncome=clients.flatMap(c=>(c.visits||[]).map(v=>({id:`visit-${v.id}`,date:v.date,type:'income',title:v.car||'Завершённый визит',amount:Number(v.price)||0,readonly:true})));
+  const manual=(entries.entries||[]).map(e=>({id:e.id,date:safeDate(e.created_at),type:e.type,title:e.description||e.category||'Операция',amount:Number(e.amount_rub)||0,server:true}));
+  state={clients,bookings:mappedBookings,completedBookings:[],adminNotifications:noticeRows,supportChats,transactions:[...visitIncome,...manual],allTimeStats:allTime.stats||null,accountingSummary:accountSummary.accounting||null};
+  catalogState={services:catalog.services||[],packages:catalog.packages||[]};
+  backendReady=true;updateBell();
+}
+async function refreshState(redraw=false){
+  try{await hydrateState();if(redraw)render()}
+  catch(err){console.error(err);if(err.status===401){showLogin('Сессия истекла. Подтвердите вход через Telegram.');return}alert(`Ошибка сервера: ${err.message}`)}
+}
+function showLogin(message='Войдите как владелец T-CITY через Telegram.'){
+  topTitle.textContent='T-CITY ADMIN';backBtn.style.visibility='hidden';bellBtn.style.visibility='hidden';
+  view.innerHTML=`<div class="login-gate"><div class="login-card"><div class="eyebrow">ЗАЩИЩЁННЫЙ ДОСТУП</div><h1 class="h1">T-CITY ADMIN</h1><p class="lead">${message}</p><button class="action primary" id="adminLogin">ПОДТВЕРДИТЬ В TELEGRAM</button><div class="login-status" id="loginStatus">Доступ разрешается только владельцу T-CITY.</div><div class="server-badge">T-CITY BACKEND</div></div></div>`;
+  document.getElementById('adminLogin').addEventListener('click',startAdminLogin);
+}
+async function startAdminLogin(){
+  const btn=document.getElementById('adminLogin'),status=document.getElementById('loginStatus');if(btn)btn.disabled=true;
+  try{const d=await api('/api/auth/browser/start',{method:'POST'});sessionStorage.setItem(ADMIN_PENDING_LOGIN_KEY,d.token);if(status)status.textContent='Telegram открыт. Нажмите «Запустить» у T-CITY и вернитесь сюда.';const w=window.open(d.telegram_link,'_blank');if(!w)location.href=d.telegram_link;pollAdminLogin(d.token)}
+  catch(err){if(status)status.textContent=`Ошибка: ${err.message}`;if(btn)btn.disabled=false}
+}
+function pollAdminLogin(token){
+  clearInterval(loginPollTimer);let tries=0;
+  loginPollTimer=setInterval(async()=>{
+    if(++tries>280){clearInterval(loginPollTimer);return}
+    try{const st=await api(`/api/auth/browser/status/${encodeURIComponent(token)}`);if(st.confirmed){clearInterval(loginPollTimer);const ex=await api('/api/auth/browser/exchange',{method:'POST',body:jsonBody({token})});adminSession=ex.session_token||'';sessionStorage.setItem(ADMIN_SESSION_KEY,adminSession);sessionStorage.removeItem(ADMIN_PENDING_LOGIN_KEY);bellBtn.style.visibility='visible';await hydrateState();route={name:'home',params:{}};historyStack=[];render()}}catch(err){console.error(err)}
+  },1500);
+}
+async function bootRealAdmin(){
+  updateClock();setInterval(updateClock,1000);
+  if(adminSession){try{await hydrateState();bellBtn.style.visibility='visible';render();return}catch(err){console.error(err);adminSession='';sessionStorage.removeItem(ADMIN_SESSION_KEY)}}
+  showLogin();const pending=sessionStorage.getItem(ADMIN_PENDING_LOGIN_KEY);if(pending)pollAdminLogin(pending);
 }
 
 bootRealAdmin();
