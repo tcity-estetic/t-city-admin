@@ -276,6 +276,21 @@ button{cursor:pointer}
 .server-badge.ok:before{background:#d8d8d8}
 .readonly-note{font-size:8px;line-height:1.6;color:#555;margin:-2px 0 13px}
 
+
+.catalog-list{display:grid;border-top:1px solid var(--line);margin-top:18px}
+.catalog-row{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);padding:16px 2px;text-align:left}
+.catalog-row-top{display:flex;align-items:center;gap:10px;justify-content:space-between}
+.catalog-row strong{font-size:14px;font-weight:400}
+.catalog-meta{display:block;margin-top:6px;color:#666;font-size:9px;line-height:1.5}
+.catalog-badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.catalog-pill{border:1px solid #333;padding:4px 6px;color:#8b8b8b;font-size:7px;letter-spacing:.08em}
+.catalog-pill.new{color:#ddd;border-color:#666}
+.catalog-pill.popular{color:#bdbdbd;border-color:#4d4d4d}
+.catalog-pill.off{opacity:.55}
+.catalog-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding:13px 0;color:#aaa;font-size:10px}
+.catalog-toggle input{width:18px;height:18px;accent-color:#d8d8d8}
+.catalog-service-picks{max-height:290px;overflow:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 0}
+.catalog-price-help{margin-top:-6px;color:#555;font-size:8px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -310,7 +325,8 @@ const STATUS={
   waiting:{name:'Ждём вас',cls:''},
   work:{name:'В работе',cls:'work'},
   ready:{name:'Готов',cls:'ready'},
-  completed:{name:'Завершено',cls:'ready'}
+  completed:{name:'Завершено',cls:'ready'},
+  cancelled:{name:'Отменена',cls:''}
 };
 const MONTHS=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const DOW=['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'];
@@ -548,13 +564,14 @@ function loadState(){
 }
 
 let state={clients:[],bookings:[],completedBookings:[],adminNotifications:[],supportChats:[],transactions:[],allTimeStats:null,accountingSummary:null};
+let catalogState={services:[],packages:[]};
 let calendarSelected=todayKey();
 let _tp=tCityParts();
 let calendarCursor=new Date(_tp.year,_tp.month-1,1,12,0,0);
 
 function save(){localStorage.setItem(LS_KEY,JSON.stringify(state));updateBell()}
 function resetDemo(){
-  if(!confirm('Сбросить админку к исходным демо-данным?')) return;
+  if(!confirm('Обновить данные ADMIN?')) return;
   state=prepareDemoState(demoData);
   calendarSelected=todayKey();
   const x=tCityParts();calendarCursor=new Date(x.year,x.month-1,1,12,0,0);
@@ -563,6 +580,9 @@ function resetDemo(){
 function client(id){return state.clients.find(x=>x.id===id)}
 function carById(c,id){return c?.cars.find(x=>x.id===id)}
 function servicesFor(b){
+  if(Array.isArray(b.serverServices) && b.serverServices.length){
+    return b.serverServices.map((x,i)=>({id:`server-${i}`,name:x.name||x.service_name||'Услуга',price:Number(x.price_rub)||0}));
+  }
   return (b.serviceIds||[]).map(id=>SERVICE_CATALOG.find(s=>s.id===id)).filter(Boolean)
 }
 function servicesText(b){return servicesFor(b).map(s=>s.name).join(' · ')||'—'}
@@ -652,6 +672,7 @@ function render(){
   const map={
     home:renderHome,calendar:renderCalendar,booking:renderBooking,
     clients:renderClients,client:renderClient,clientCar:renderClientCar,
+    catalog:renderCatalog,
     support:renderSupport,supportChat:renderSupportChat,
     mailing:renderMailing,accounting:renderAccounting,allTime:renderAllTime,
     birthday:renderBirthdayComposer,notifications:renderNotifications,
@@ -705,6 +726,7 @@ function renderHome(){
     <nav class="nav-list">
       ${navRow('▣','Календарь','Все записи по датам и времени','calendar')}
       ${navRow('◉','Клиенты','Профили, автомобили, визиты и предпочтения','clients')}
+      ${navRow('≡','Услуги и цены','Услуги, пакеты, цены и видимость в CLIENT','catalog')}
       ${navRow('□','Поддержка','Диалоги, переданные ассистентом','support')}
       ${navRow('◁','Рассылка уведомлений','Одному клиенту или всем сразу','mailing')}
       ${navRow('▥','Учёт','Доходы, расходы, оборот и статистика','accounting')}
@@ -869,748 +891,72 @@ function finalizeVisit(b){
 }
 
 function openBookingEditor(b){
-  const selected=new Set(b.serviceIds||[]);
+  const current=servicesFor(b);
+  const c=bookingClient(b),car=bookingCar(b);
+  const existingNames=new Set(current.map(x=>String(x.name).toLowerCase()));
+  const choices=[
+    ...current.map((x,i)=>({key:`current-${i}`,name:x.name,price:Number(x.price)||0,checked:true})),
+    ...catalogState.services.filter(x=>x.enabled&&!existingNames.has(String(x.name).toLowerCase())).map(x=>({key:`catalog-${x.code}`,name:x.name,price:servicePriceForCar(x,car),checked:false}))
+  ];
   openSheet(`
     <div class="sheet-head"><h3>ИЗМЕНИТЬ ЗАПИСЬ</h3><button class="sheet-close" id="closeSheet">×</button></div>
     <div class="inline2">
       <div class="field"><label>Дата</label><input type="date" id="editDate" value="${b.date}"></div>
-      <div class="field"><label>Время</label><select id="editTime">${Array.from({length:11},(_,i)=>10+i).map(h=>`<option ${b.time===String(h).padStart(2,'0')+':00'?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select></div>
-    </div>
-    <div class="field"><label>Услуги</label>
-      ${SERVICE_CATALOG.map(s=>`<label class="service-check"><input type="checkbox" data-service="${s.id}" ${selected.has(s.id)?'checked':''}><span>${s.name}</span><em>${money(s.price)}</em></label>`).join('')}
-    </div>
-    <div class="field"><label>Комментарий</label><textarea id="editComment">${b.comment||''}</textarea></div>
-    <button class="action primary" id="saveBookingEdit">СОХРАНИТЬ</button>
-    <div class="mini-note">В реальной системе эта же запись будет обновляться и у клиента. Пока это локальный прототип ADMIN.</div>
-  `);
-  document.getElementById('closeSheet').addEventListener('click',closeSheet);
-  document.getElementById('saveBookingEdit').addEventListener('click',()=>{
-    const ids=[...sheet.querySelectorAll('[data-service]:checked')].map(x=>x.dataset.service);
-    b.date=document.getElementById('editDate').value;
-    b.time=document.getElementById('editTime').value;
-    b.serviceIds=ids;
-    b.total=ids.reduce((sum,id)=>sum+(SERVICE_CATALOG.find(s=>s.id===id)?.price||0),0);
-    b.comment=document.getElementById('editComment').value.trim();
-    save();closeSheet();renderBooking();
-  });
-}
-
-function renderClients(){
-  shell('КЛИЕНТЫ',`
-    <div class="eyebrow">БАЗА КЛИЕНТОВ</div>
-    <h1 class="h1">КЛИЕНТЫ</h1>
-    <input class="search" id="clientSearch" placeholder="Имя, телефон, госномер...">
-    <button class="action primary" id="addClient">+ ДОБАВИТЬ КЛИЕНТА</button>
-    <div class="client-list" id="clientList"></div>
-  `);
-  const draw=(q='')=>{
-    const needle=q.trim().toLowerCase();
-    const arr=state.clients.filter(c=>{
-      const cars=(c.cars||[]).map(x=>`${x.name} ${x.plate}`).join(' ');
-      return `${c.name} ${c.phone} ${cars}`.toLowerCase().includes(needle);
-    });
-    document.getElementById('clientList').innerHTML=arr.map(c=>`
-      <button class="client-row" data-client="${c.id}">
-        <div class="client-row-top"><strong>${c.name}${c.vip?'<span class="vip-badge">VIP</span>':''}</strong><span class="arrow">→</span></div>
-        <div class="client-meta">${c.phone||'—'}<br>${(c.cars||[]).length} авто · ${(c.visits||[]).length} посещений${c.birthday?` · ДР ${c.birthday.split('-').slice(1).reverse().join('.')}`:''}</div>
-      </button>`).join('')||'<div class="empty">Ничего не найдено.</div>';
-    document.querySelectorAll('[data-client]').forEach(x=>x.addEventListener('click',()=>go('client',{id:x.dataset.client})));
-  };
-  draw();
-  document.getElementById('clientSearch').addEventListener('input',e=>draw(e.target.value));
-  document.getElementById('addClient').addEventListener('click',()=>go('addClient'));
-}
-
-function renderClient(){
-  const c=client(route.params.id);if(!c){back();return}
-  const tab=route.params.tab||'main';
-  shell('ПРОФИЛЬ КЛИЕНТА',`
-    <div class="profile-hero">
-      <div class="avatar">${c.name.split(/\s+/).slice(0,2).map(x=>x[0]).join('')}</div>
-      <div><h2>${c.name}</h2><p>${c.phone||'—'}<br>${c.telegram||'—'}</p></div>
-    </div>
-    <div class="tabs">
-      ${[['main','ОСНОВНОЕ'],['cars','АВТО'],['visits','ВИЗИТЫ'],['prefs','ПРЕДПОЧТЕНИЯ'],['reminders','НАПОМИНАНИЯ'],['history','ИСТОРИЯ']].map(([id,n])=>`<button class="tab ${tab===id?'active':''}" data-tab="${id}">${n}</button>`).join('')}
-    </div>
-    <div id="clientTab"></div>
-  `);
-  document.querySelectorAll('[data-tab]').forEach(x=>x.addEventListener('click',()=>{route.params.tab=x.dataset.tab;renderClient()}));
-  const box=document.getElementById('clientTab');
-  if(tab==='main') renderClientMain(c,box);
-  if(tab==='cars') renderClientCars(c,box);
-  if(tab==='visits') renderClientVisits(c,box);
-  if(tab==='prefs') renderClientPrefs(c,box);
-  if(tab==='reminders') renderClientReminders(c,box);
-  if(tab==='history') renderClientHistory(c,box);
-}
-function renderClientMain(c,box){
-  const total=(c.visits||[]).reduce((s,v)=>s+(Number(v.price)||0),0);
-  box.innerHTML=`
-    <div class="metrics">
-      <div class="metric"><strong>${(c.visits||[]).length}</strong><span>посещений</span></div>
-      <div class="metric"><strong>${money(total)}</strong><span>за всё время</span></div>
-    </div>
-    <div class="field"><label>Имя</label><input id="cName" value="${c.name}"></div>
-    <div class="field"><label>Телефон</label><input id="cPhone" value="${c.phone||'—'}"></div>
-    <div class="field"><label>Telegram</label><input id="cTelegram" value="${c.telegram||'—'}"></div>
-    <div class="field"><label>Дата рождения</label><input type="date" id="cBirthday" value="${c.birthday||''}"></div>
-    <label class="vip-switch"><span>VIP · выдаётся только вручную владельцем T-CITY</span><input type="checkbox" id="cVip" ${c.vip?'checked':''}></label>
-    <div class="field"><label>Внутренняя заметка T-CITY · клиент её не видит</label><textarea id="cNotes">${c.notes||''}</textarea></div>
-
-    <div class="bonus-admin-card">
-      <div class="bonus-admin-head">
-        <span class="bonus-admin-coin"><img src="tcity-logo-final.png" alt=""></span>
-        <span><strong>T-Бонусы</strong><small>Внутренний баланс клиента</small></span>
-        <span class="bonus-admin-balance">${new Intl.NumberFormat('ru-RU').format(ensureWallet(c).balance)} T</span>
-      </div>
-      <div class="toolbar">
-        <button class="action small" id="bonusCredit">+ НАЧИСЛИТЬ</button>
-        <button class="action small" id="bonusDebit">− СПИСАТЬ</button>
-      </div>
-      <div class="bonus-admin-history">
-        ${ensureWallet(c).transactions.slice(0,4).map(tx=>`
-          <div class="bonus-admin-tx">
-            <span><strong>${tx.title}</strong><small>${fmtDate(tx.date)}</small></span>
-            <span>${tx.type==='credit'?'+':'−'}${new Intl.NumberFormat('ru-RU').format(tx.amount)} T</span>
-          </div>`).join('')||'<div class="mini-note">Операций пока нет.</div>'}
-      </div>
-    </div>
-
-    <button class="action" id="saveClient">СОХРАНИТЬ ИЗМЕНЕНИЯ</button>
-    <button class="action primary" id="personalNotice">ОТПРАВИТЬ УВЕДОМЛЕНИЕ</button>
-  `;
-  document.getElementById('saveClient').addEventListener('click',()=>{
-    c.name=document.getElementById('cName').value.trim()||c.name;
-    c.phone=document.getElementById('cPhone').value.trim()||'—';
-    c.telegram=document.getElementById('cTelegram').value.trim()||'—';
-    c.birthday=document.getElementById('cBirthday').value||'';
-    c.vip=document.getElementById('cVip').checked;
-    c.notes=document.getElementById('cNotes').value.trim();
-    save();renderClient();
-  });
-  document.getElementById('personalNotice').addEventListener('click',()=>go('mailing',{clientId:c.id}));
-  document.getElementById('bonusCredit').addEventListener('click',()=>openBonusAdjust(c,'credit'));
-  document.getElementById('bonusDebit').addEventListener('click',()=>openBonusAdjust(c,'debit'));
-}
-function openBonusAdjust(c,type){
-  openSheet(`
-    <div class="sheet-head"><h3>${type==='credit'?'НАЧИСЛИТЬ T-БОНУСЫ':'СПИСАТЬ T-БОНУСЫ'}</h3><button class="sheet-close" id="closeSheet">×</button></div>
-    <div class="field"><label>Количество</label><input type="number" min="1" id="bonusAmount"></div>
-    <div class="field"><label>Причина</label><input id="bonusReason" placeholder="${type==='credit'?'Подарок / компенсация / акция':'Оплата / корректировка'}"></div>
-    <button class="action primary" id="saveBonusAdjust">${type==='credit'?'НАЧИСЛИТЬ':'СПИСАТЬ'}</button>
-  `);
-  document.getElementById('closeSheet').addEventListener('click',closeSheet);
-  document.getElementById('saveBonusAdjust').addEventListener('click',()=>{
-    const amount=Number(document.getElementById('bonusAmount').value);
-    const reason=document.getElementById('bonusReason').value.trim()||(type==='credit'?'Начисление T-CITY':'Списание T-CITY');
-    if(!amount)return;
-    if(type==='credit')walletCredit(c,amount,reason);else walletDebit(c,amount,reason);
-    save();closeSheet();renderClient();
-  });
-}
-
-function renderClientCars(c,box){
-  box.innerHTML=`
-    <button class="action primary" id="addCar">+ ДОБАВИТЬ АВТОМОБИЛЬ</button>
-    ${(c.cars||[]).map(car=>`
-      <button class="car-card" data-car="${car.id}" style="width:100%;padding:0;text-align:left;color:inherit">
-        <div class="car-image"><img src="${car.image||''}" alt="${car.name}"></div>
-        <div class="car-copy"><strong>${car.name}</strong><span>${car.plate} · ${car.color||'—'}</span></div>
-      </button>`).join('')||'<div class="empty">Автомобилей пока нет.</div>'}
-  `;
-  box.querySelectorAll('[data-car]').forEach(x=>x.addEventListener('click',()=>go('clientCar',{clientId:c.id,carId:x.dataset.car})));
-  document.getElementById('addCar').addEventListener('click',()=>openCarEditor(c,null));
-}
-function renderClientCar(){
-  const c=client(route.params.clientId),car=carById(c,route.params.carId);
-  if(!c||!car){back();return}
-  shell('АВТОМОБИЛЬ',`
-    <div class="car-card">
-      <div class="car-image"><img src="${car.image||''}" alt="${car.name}"></div>
-      <div class="car-copy"><strong>${car.name}</strong><span>${car.plate}</span></div>
-    </div>
-    <div class="kv">
-      <div class="kv-row"><span>Цвет</span><span>${car.color||'—'}</span></div>
-      <div class="kv-row"><span>Год</span><span>${car.year||'—'}</span></div>
-      <div class="kv-row"><span>Пробег</span><span>${car.mileage||'—'}</span></div>
-      <div class="kv-row"><span>VIN</span><span>${car.vin||'—'}</span></div>
-    </div>
-    <button class="action" id="editCar">ИЗМЕНИТЬ ИНФОРМАЦИЮ / ИЗОБРАЖЕНИЕ</button>
-    <button class="action danger" id="deleteCar">УДАЛИТЬ АВТОМОБИЛЬ</button>
-  `);
-  document.getElementById('editCar').addEventListener('click',()=>openCarEditor(c,car));
-  document.getElementById('deleteCar').addEventListener('click',()=>deleteClientCar(c,car));
-}
-function deleteClientCar(c,car){
-  const active=state.bookings.filter(b=>b.clientId===c.id && b.carId===car.id);
-  if(active.length){
-    openSheet(`
-      <div class="sheet-head">
-        <h3>АВТОМОБИЛЬ НЕЛЬЗЯ УДАЛИТЬ</h3>
-        <button class="sheet-close" id="closeSheet">×</button>
-      </div>
-      <div class="birthday-card">
-        <strong>${car.name} · ${car.plate}</strong>
-        <p>На этот автомобиль есть ${active.length} активн${active.length===1?'ая запись':'ые записи'}. Сначала отмените или завершите ${active.length===1?'её':'их'}, чтобы не оставить запись без автомобиля.</p>
-      </div>
-      <button class="action primary" id="closeDeleteBlocked">ПОНЯЛ</button>
-    `);
-    document.getElementById('closeSheet').addEventListener('click',closeSheet);
-    document.getElementById('closeDeleteBlocked').addEventListener('click',closeSheet);
-    return;
-  }
-
-  openSheet(`
-    <div class="sheet-head">
-      <h3>УДАЛИТЬ АВТОМОБИЛЬ?</h3>
-      <button class="sheet-close" id="closeSheet">×</button>
-    </div>
-    <div class="birthday-card">
-      <strong>${car.name} · ${car.plate}</strong>
-      <p>Автомобиль исчезнет из гаража клиента. История уже завершённых визитов останется в профиле и статистике T-CITY.</p>
-    </div>
-    <button class="action danger" id="confirmDeleteCar">УДАЛИТЬ АВТОМОБИЛЬ</button>
-    <button class="action" id="cancelDeleteCar">ОСТАВИТЬ</button>
-  `);
-
-  document.getElementById('closeSheet').addEventListener('click',closeSheet);
-  document.getElementById('cancelDeleteCar').addEventListener('click',closeSheet);
-  document.getElementById('confirmDeleteCar').addEventListener('click',()=>{
-    c.cars=(c.cars||[]).filter(x=>x.id!==car.id);
-
-    // Remove stale service reminders specifically tied to this car.
-    const removedReminderIds=(c.serviceReminders||[])
-      .filter(r=>r.carId===car.id)
-      .map(r=>r.id);
-
-    c.serviceReminders=(c.serviceReminders||[]).filter(r=>r.carId!==car.id);
-
-    if(removedReminderIds.length){
-      state.adminNotifications=state.adminNotifications.filter(
-        n=>!removedReminderIds.includes(n.reminderId)
-      );
-    }
-
-    state.adminNotifications.unshift({
-      id:uid('n'),
-      type:'car',
-      clientId:c.id,
-      title:'Автомобиль удалён',
-      text:`${c.name} · ${car.name} · ${car.plate}`,
-      date:new Date().toISOString(),
-      read:true
-    });
-
-    save();
-    closeSheet();
-    go('client',{id:c.id,tab:'cars'},false);
-  });
-}
-
-function openCarEditor(c,car){
-  openSheet(`
-    <div class="sheet-head"><h3>${car?'ИЗМЕНИТЬ АВТО':'ДОБАВИТЬ АВТО'}</h3><button class="sheet-close" id="closeSheet">×</button></div>
-    <div class="field"><label>Марка / модель</label><input id="carName" value="${car?.name||''}"></div>
-    <div class="field"><label>Госномер</label><input id="carPlate" value="${car?.plate||''}"></div>
-    <div class="inline2"><div class="field"><label>Цвет</label><input id="carColor" value="${car?.color||''}"></div><div class="field"><label>Год</label><input id="carYear" value="${car?.year||''}"></div></div>
-    <div class="field"><label>Пробег</label><input id="carMileage" value="${car?.mileage||''}"></div>
-    <div class="field"><label>VIN</label><input id="carVin" value="${car?.vin||''}"></div>
-    <div class="field"><label>Готовая моделька T-CITY · PNG/JPG</label><input type="file" accept="image/*" id="carImage"></div>
-    <div class="mini-note">Для финального качества модельку по-прежнему делаем отдельно по реальным фото в утверждённом стиле T-CITY, затем здесь просто прикрепляем готовое изображение.</div>
-    <button class="action primary" id="saveCar">СОХРАНИТЬ</button>
-  `);
-  document.getElementById('closeSheet').addEventListener('click',closeSheet);
-  document.getElementById('saveCar').addEventListener('click',()=>{
-    const target=car||{id:uid('car'),image:''};
-    target.name=document.getElementById('carName').value.trim()||'Автомобиль';
-    target.plate=document.getElementById('carPlate').value.trim()||'—';
-    target.color=document.getElementById('carColor').value.trim()||'—';
-    target.year=document.getElementById('carYear').value.trim()||'—';
-    target.mileage=document.getElementById('carMileage').value.trim()||'—';
-    target.vin=document.getElementById('carVin').value.trim()||'—';
-    const file=document.getElementById('carImage').files[0];
-    const finish=()=>{
-      if(!car)c.cars.push(target);
-      save();closeSheet();
-      if(car) renderClientCar(); else {route.params.tab='cars';renderClient()}
-    };
-    if(file){
-      const reader=new FileReader();
-      reader.onload=()=>{target.image=reader.result;finish()};
-      reader.readAsDataURL(file);
-    }else finish();
-  });
-}
-function renderClientVisits(c,box){
-  box.innerHTML=(c.visits||[]).length?`<div class="today-list">${c.visits.map(v=>`
-    <div class="booking-row"><div class="booking-row-top"><span style="flex:1"><strong>${v.car}</strong><span class="booking-meta">${fmtDate(v.date)}<br>${v.services}</span></span><span>${money(v.price)}</span></div></div>`).join('')}</div>`:'<div class="empty">История посещений пока пуста.</div>';
-}
-function renderClientPrefs(c,box){
-  box.innerHTML=`
-    <div class="section-title" style="margin-top:18px">СВОБОДНЫЕ ПРЕДПОЧТЕНИЯ</div>
-    <p class="lead">Без готовых списков. Можно написать что угодно: напиток, аромат, пожелание или любой другой пункт.</p>
-    <div id="prefs">${(c.preferences||[]).map((p,i)=>`
-      <div class="pref-row"><input data-pref-key="${i}" value="${p.key}"><input data-pref-value="${i}" value="${p.value}"></div>`).join('')}</div>
-    <button class="action" id="addPref">+ ДОБАВИТЬ ПРЕДПОЧТЕНИЕ</button>
-    <button class="action primary" id="savePrefs">СОХРАНИТЬ</button>
-  `;
-  document.getElementById('addPref').addEventListener('click',()=>{
-    c.preferences.push({key:'Новый пункт',value:''});save();renderClientPrefs(c,box)
-  });
-  document.getElementById('savePrefs').addEventListener('click',()=>{
-    c.preferences=(c.preferences||[]).map((p,i)=>({
-      key:box.querySelector(`[data-pref-key="${i}"]`)?.value.trim()||p.key,
-      value:box.querySelector(`[data-pref-value="${i}"]`)?.value.trim()||''
-    })).filter(p=>p.key||p.value);
-    save();renderClientPrefs(c,box);
-  });
-}
-function renderClientReminders(c,box){
-  box.innerHTML=`
-    <div class="section-title" style="margin-top:18px">СЕРВИСНЫЕ НАПОМИНАНИЯ</div>
-    <p class="lead">ADMIN сам напомнит, когда наступит дата. После backend проверка будет выполняться сервером каждый день.</p>
-    <div>
-      ${(c.serviceReminders||[]).map(r=>`
-        <div class="reminder-row">
-          <span><strong>${r.text}</strong><span>${fmtDate(r.date)}${r.adminAlerted?' · напоминание создано':''}</span></span>
-          <button class="action small danger" data-remove-reminder="${r.id}">×</button>
-        </div>`).join('')||'<div class="empty">Напоминаний пока нет.</div>'}
-    </div>
-    <div class="field"><label>Дата</label><input type="date" id="reminderDate"></div>
-    <div class="field"><label>Что напомнить</label><input id="reminderText" placeholder="Например: предложить обновить керамику"></div>
-    <button class="action" id="addReminder">+ ДОБАВИТЬ НАПОМИНАНИЕ</button>
-  `;
-  document.getElementById('addReminder').addEventListener('click',()=>{
-    const date=document.getElementById('reminderDate').value;
-    const text=document.getElementById('reminderText').value.trim();
-    if(!date||!text)return;
-    c.serviceReminders.push({id:uid('sr'),date,text,adminAlerted:false});
-    save();renderClientReminders(c,box);
-  });
-  box.querySelectorAll('[data-remove-reminder]').forEach(btn=>btn.addEventListener('click',()=>{
-    c.serviceReminders=c.serviceReminders.filter(r=>r.id!==btn.dataset.removeReminder);
-    state.adminNotifications=state.adminNotifications.filter(n=>n.reminderId!==btn.dataset.removeReminder);
-    save();renderClientReminders(c,box);
-  }));
-}
-
-function renderClientHistory(c,box){
-  const chats=state.supportChats.filter(x=>x.clientId===c.id);
-  box.innerHTML=`
-    <div class="section-title" style="margin-top:18px">УВЕДОМЛЕНИЯ КЛИЕНТУ</div>
-    ${(c.notifications||[]).length?`<div class="notice-list">${c.notifications.map(n=>`<div class="notice-row"><div class="notice-title">${n.title}</div><div class="notice-meta">${fmtDate(n.date)}<br>${n.text}</div></div>`).join('')}</div>`:'<div class="empty">История уведомлений пуста.</div>'}
-    <div class="section-title" style="margin-top:22px">ПОДДЕРЖКА</div>
-    ${chats.length?`<div class="chat-list">${chats.map(ch=>`<button class="chat-row" data-open-chat="${ch.id}"><div class="chat-row-top"><strong>Диалог с T-CITY</strong><span class="arrow">→</span></div><div class="chat-meta">${ch.messages.length} сообщений</div></button>`).join('')}</div>`:'<div class="empty">Обращений в поддержку пока нет.</div>'}
-  `;
-  box.querySelectorAll('[data-open-chat]').forEach(x=>x.addEventListener('click',()=>go('supportChat',{id:x.dataset.openChat})));
-}
-
-function renderAddClient(){
-  shell('ДОБАВИТЬ КЛИЕНТА',`
-    <div class="eyebrow">НОВЫЙ ПРОФИЛЬ</div>
-    <h1 class="h1">ДОБАВИТЬ КЛИЕНТА</h1>
-    <div class="field"><label>Имя</label><input id="newName"></div>
-    <div class="field"><label>Телефон</label><input id="newPhone" placeholder="—"></div>
-    <div class="field"><label>Telegram</label><input id="newTelegram" placeholder="—"></div>
-    <div class="field"><label>Внутренняя заметка</label><textarea id="newNotes"></textarea></div>
-    <button class="action primary" id="createClient">СОЗДАТЬ КЛИЕНТА</button>
-  `);
-  document.getElementById('createClient').addEventListener('click',()=>{
-    const name=document.getElementById('newName').value.trim();
-    if(!name)return;
-    const c={id:uid('c'),name,phone:document.getElementById('newPhone').value.trim()||'—',telegram:document.getElementById('newTelegram').value.trim()||'—',birthday:'',vip:false,notes:document.getElementById('newNotes').value.trim(),preferences:[],cars:[],visits:[],notifications:[],serviceReminders:[],wallet:{balance:0,earnedTotal:0,spentTotal:0,transactions:[]}};
-    state.clients.unshift(c);save();go('client',{id:c.id},false);
-  });
-}
-
-function renderSupport(){
-  const chats=state.supportChats.filter(x=>x.escalated);
-  shell('ПОДДЕРЖКА',`
-    <div class="eyebrow">ДИАЛОГИ СПЕЦИАЛИСТА</div>
-    <h1 class="h1">ПОДДЕРЖКА</h1>
-    <p class="lead">Один чат — один клиент. Здесь появляются обращения, которые ассистент передал вам.</p>
-    <div class="chat-list" style="margin-top:18px">
-      ${chats.map(ch=>{
-        const c=client(ch.clientId),last=ch.messages[ch.messages.length-1];
-        return `<button class="chat-row ${ch.unread?'':'read'}" data-chat="${ch.id}" style="${ch.unread?'':'opacity:.42'}">
-          <div class="chat-row-top"><strong>${c?.name||'Клиент'}</strong>${ch.unread?'<span class="notice-dot"></span>':''}</div>
-          <div class="chat-meta">${last?.text||''}</div>
-        </button>`;
-      }).join('')||'<div class="empty">Нет диалогов, ожидающих внимания.</div>'}
-    </div>
-  `);
-  view.querySelectorAll('[data-chat]').forEach(x=>x.addEventListener('click',()=>go('supportChat',{id:x.dataset.chat})));
-}
-function renderSupportChat(){
-  const ch=state.supportChats.find(x=>x.id===route.params.id);if(!ch){back();return}
-  const c=client(ch.clientId);ch.unread=false;save();
-  shell(c?.name||'ПОДДЕРЖКА',`
-    <div class="eyebrow">ОТВЕТ ОТ ИМЕНИ T-CITY</div>
-    <h1 class="h1">${c?.name||'КЛИЕНТ'}</h1>
-    <p class="lead">${c?.phone||'—'}</p>
-    <div class="message-list" id="messages">
-      ${ch.messages.map(m=>`<div class="msg ${m.side==='client'?'client':'admin'}">${m.text}<span class="msg-time">${m.time||''} · ${m.side==='client'?'КЛИЕНТ':'T-CITY'}</span></div>`).join('')}
-    </div>
-    <div class="composer"><input id="replyText" placeholder="Ответить от имени T-CITY..."><button id="sendReply">↑</button></div>
-  `);
-  document.getElementById('sendReply').addEventListener('click',()=>{
-    const inp=document.getElementById('replyText'),text=inp.value.trim();if(!text)return;
-    ch.messages.push({side:'admin',text,time:new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})});
-    save();renderSupportChat();
-  });
-}
-
-function renderMailing(){
-  const preset=route.params.clientId||'';
-  const presetTitle=route.params.title||'';
-  const presetText=route.params.text||'';
-  let mode=preset?'one':'all';
-  shell('РАССЫЛКА',`
-    <div class="eyebrow">УВЕДОМЛЕНИЯ КЛИЕНТАМ</div>
-    <h1 class="h1">РАССЫЛКА</h1>
-    <div class="recipient-mode"><button data-mode="all" class="${mode==='all'?'active':''}">ВСЕМ</button><button data-mode="one" class="${mode==='one'?'active':''}">ОДНОМУ</button></div>
-    <div class="field hidden" id="recipientField"><label>Клиент</label><select id="recipient">${state.clients.map(c=>`<option value="${c.id}" ${c.id===preset?'selected':''}>${c.name}</option>`).join('')}</select></div>
-    <div class="field"><label>Заголовок</label><input id="mailTitle" value="${presetTitle}" placeholder="Например: Персональное предложение"></div>
-    <div class="field"><label>Текст</label><textarea id="mailText" placeholder="Сообщение клиенту...">${presetText}</textarea></div>
-    <div class="preview"><strong id="previewTitle">Предварительный просмотр</strong><p id="previewText">Здесь будет видно сообщение перед отправкой.</p></div>
-    <button class="action primary" id="sendMail">ОТПРАВИТЬ</button>
-  `);
-  const recipientField=document.getElementById('recipientField');
-  const updateMode=()=>{
-    recipientField.classList.toggle('hidden',mode!=='one');
-    document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x.dataset.mode===mode));
-  };
-  updateMode();
-  document.querySelectorAll('[data-mode]').forEach(x=>x.addEventListener('click',()=>{mode=x.dataset.mode;updateMode()}));
-  const updatePreview=()=>{
-    document.getElementById('previewTitle').textContent=document.getElementById('mailTitle').value.trim()||'Предварительный просмотр';
-    document.getElementById('previewText').textContent=document.getElementById('mailText').value.trim()||'Здесь будет видно сообщение перед отправкой.';
-  };
-  document.getElementById('mailTitle').addEventListener('input',updatePreview);
-  document.getElementById('mailText').addEventListener('input',updatePreview);
-  document.getElementById('sendMail').addEventListener('click',()=>{
-    const title=document.getElementById('mailTitle').value.trim(),text=document.getElementById('mailText').value.trim();
-    if(!title||!text)return;
-    const targets=mode==='all'?state.clients:[client(document.getElementById('recipient').value)].filter(Boolean);
-    targets.forEach(c=>c.notifications.push({date:todayKey(),title,text}));
-    state.adminNotifications.unshift({id:uid('n'),type:'mail',title:'Рассылка отправлена',text:mode==='all'?`Получателей: ${targets.length}`:`${targets[0]?.name||''}`,date:new Date().toISOString(),read:true});
-    save();alert('Уведомление сохранено в демо-истории клиента.');go('home',{},false);
-  });
-}
-
-function renderAllTime(){
-  const visits=state.clients.flatMap(c=>c.visits||[]);
-  const serviced=visits.length;
-  const gross=visits.reduce((s,v)=>s+(Number(v.price)||0),0);
-  const avg=serviced?Math.round(gross/serviced):0;
-  shell('ЗА ВСЁ ВРЕМЯ',`
-    <div class="eyebrow">T-CITY · ОБЩИЙ РЕЗУЛЬТАТ</div>
-    <h1 class="h1">ЗА ВСЁ ВРЕМЯ</h1>
-    <p class="lead">Несколько цифр без перегруза — просто чтобы видеть, как растёт T-CITY.</p>
-    <div class="metrics" style="grid-template-columns:1fr 1fr;margin-top:24px">
-      <div class="metric"><strong>${serviced}</strong><span>автомобилей обслужено</span></div>
-      <div class="metric"><strong>${money(gross)}</strong><span>выручка за всё время</span></div>
-    </div>
-    <div class="metric" style="margin-top:8px"><strong>${money(avg)}</strong><span>средний чек</span></div>
-    <div class="time-source">Показатели строятся из завершённых визитов. Активные записи сюда не попадают.</div>
-  `);
-}
-
-function renderAccounting(){
-  const incomes=state.transactions.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const expenses=state.transactions.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const serviced=state.clients.reduce((s,c)=>s+(c.visits||[]).length,0);
-  const booked=state.bookings.length;
-  const upcoming=state.bookings.filter(b=>b.status!=='ready').length;
-  shell('УЧЁТ',`
-    <div class="eyebrow">ФИНАНСЫ И СТАТИСТИКА</div>
-    <h1 class="h1">УЧЁТ</h1>
-    <div class="metrics">
-      <div class="metric"><strong>${money(incomes)}</strong><span>доходы</span></div>
-      <div class="metric"><strong>${money(expenses)}</strong><span>расходы</span></div>
-      <div class="metric"><strong>${money(incomes-expenses)}</strong><span>результат</span></div>
-      <div class="metric"><strong>${serviced}</strong><span>машин обслужено</span></div>
-      <div class="metric"><strong>${booked}</strong><span>записано</span></div>
-      <div class="metric"><strong>${upcoming}</strong><span>предстоит</span></div>
+      <div class="field"><label>Время</label><select id="editTime"></select></div>
     </div>
     <div class="inline2">
-      <button class="action" id="addIncome">+ ДОХОД</button>
-      <button class="action" id="addExpense">+ РАСХОД</button>
+      <div class="field"><label>Время работ · часов</label><input type="number" min="1" max="8" id="editDuration" value="${Math.max(1,Number(b.duration)||1)}"></div>
+      <div class="field"><label>Стоимость · ₽</label><input type="number" min="0" step="100" id="editTotal" value="${Number(b.total)||0}"></div>
     </div>
-    <div class="section-title" style="margin-top:22px">ОПЕРАЦИИ</div>
-    <div class="transaction-list">${[...state.transactions].reverse().map(t=>`
-      <div class="transaction-row">
-        <span><strong style="font-size:11px;font-weight:400">${t.title}</strong><span class="transaction-meta">${fmtDate(t.date)} · ${t.type==='income'?'доход':'расход'}</span></span>
-        <span class="transaction-amount ${t.type==='income'?'money-positive':'money-negative'}">${t.type==='income'?'+':'−'}${money(t.amount)}</span>
-      </div>`).join('')}</div>
-  `);
-  document.getElementById('addIncome').addEventListener('click',()=>openTransaction('income'));
-  document.getElementById('addExpense').addEventListener('click',()=>openTransaction('expense'));
-}
-function openTransaction(type){
-  openSheet(`
-    <div class="sheet-head"><h3>${type==='income'?'ДОБАВИТЬ ДОХОД':'ДОБАВИТЬ РАСХОД'}</h3><button class="sheet-close" id="closeSheet">×</button></div>
-    <div class="field"><label>Описание</label><input id="trTitle"></div>
-    <div class="field"><label>Сумма</label><input type="number" min="0" id="trAmount"></div>
-    <div class="field"><label>Дата</label><input type="date" id="trDate" value="${todayKey()}"></div>
-    <button class="action primary" id="saveTransaction">СОХРАНИТЬ</button>
-  `);
-  document.getElementById('closeSheet').addEventListener('click',closeSheet);
-  document.getElementById('saveTransaction').addEventListener('click',()=>{
-    const amount=Number(document.getElementById('trAmount').value),title=document.getElementById('trTitle').value.trim();
-    if(!amount||!title)return;
-    state.transactions.push({id:uid('t'),date:document.getElementById('trDate').value,type,title,amount});
-    save();closeSheet();renderAccounting();
-  });
-}
-
-function renderBirthdayComposer(){
-  const c=client(route.params.clientId);
-  if(!c){back();return}
-  const first=(c.name||'').split(/\s+/)[0]||'';
-  const defaultText=`${first}, поздравляем вас с днём рождения! Команда T-CITY желает вам отличного настроения и приятных событий. Спасибо, что вы с нами.`;
-  shell('ДЕНЬ РОЖДЕНИЯ',`
-    <div class="eyebrow">ПЕРСОНАЛЬНОЕ ПОЗДРАВЛЕНИЕ</div>
-    <h1 class="h1">${c.name}</h1>
-    <div class="birthday-card">
-      <strong>${c.birthday?`День рождения · ${c.birthday.split('-').slice(1).reverse().join('.')}`:'Дата рождения не указана'}</strong>
-      <p>Текст можно изменить перед отправкой. Подарок и T-Бонусы задаёте вы лично.</p>
+    <div class="field"><label>Услуги</label>
+      ${choices.map((x,i)=>`<label class="service-check"><input type="checkbox" data-edit-service="${i}" ${x.checked?'checked':''}><span>${escapeHtmlAdmin(x.name)}</span><em>${money(x.price)}</em></label>`).join('')||'<div class="empty">Услуги пока не указаны.</div>'}
     </div>
-    <div class="field"><label>Текст поздравления</label><textarea id="birthdayText">${defaultText}</textarea></div>
-    <div class="field"><label>Подарок / бесплатная услуга / скидка</label><input id="birthdayGift" placeholder="Например: бесплатная полировка фар"></div>
-    <div class="field"><label>T-Бонусы в подарок</label><input type="number" min="0" id="birthdayBonus" placeholder="Например: 5000"></div>
-    <button class="action primary" id="sendBirthday">ОТПРАВИТЬ КЛИЕНТУ</button>
+    <div class="field"><label>Комментарий</label><textarea id="editComment">${b.comment||''}</textarea></div>
+    <button class="action primary" id="saveBookingEdit">СОХРАНИТЬ ИЗМЕНЕНИЯ</button>
+    <div class="mini-note">Показываются только свободные окна. Изменения сохраняются в базе и сразу видны клиенту.</div>
   `);
-  document.getElementById('sendBirthday').addEventListener('click',()=>{
-    const text=document.getElementById('birthdayText').value.trim();
-    const gift=document.getElementById('birthdayGift').value.trim();
-    const bonus=Math.max(0,Math.round(Number(document.getElementById('birthdayBonus').value)||0));
-    if(!text)return;
-
-    if(bonus)walletCredit(c,bonus,'Подарок на день рождения');
-    const full=[text,gift?`Подарок от T-CITY: ${gift}.`:'',bonus?`На ваш счёт начислено ${new Intl.NumberFormat('ru-RU').format(bonus)} T-Бонусов.`:''].filter(Boolean).join('\\n\\n');
-    c.notifications.push({date:todayKey(),title:'С днём рождения!',text:full,type:'birthday',gift,bonus});
-    state.adminNotifications.filter(n=>n.type==='birthday'&&n.clientId===c.id).forEach(n=>n.read=true);
-    save();
-    alert(`Поздравление сохранено в демо-уведомлениях ${c.name}.`);
-    go('client',{id:c.id,tab:'history'},false);
-  });
-}
-
-function renderNotifications(){
-  shell('УВЕДОМЛЕНИЯ',`
-    <div class="eyebrow">ТОЛЬКО ДЛЯ ADMIN</div>
-    <h1 class="h1">УВЕДОМЛЕНИЯ</h1>
-    <div class="toolbar">
-      <button class="action small" id="markAll">ПРОЧИТАТЬ ВСЕ</button>
-      <button class="action small danger" id="clearNotices">ОЧИСТИТЬ ИСТОРИЮ</button>
-    </div>
-    <div class="notice-list">
-      ${state.adminNotifications.map(n=>`<button class="notice-row ${n.read?'read':''}" data-notice="${n.id}">
-        <div class="notice-row-top"><span><span class="notice-title">${n.title}</span><span class="notice-meta">${n.text}<br>${new Date(n.date).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span></span><span class="notice-dot"></span></div>
-      </button>`).join('')||'<div class="empty">История уведомлений пуста.</div>'}
-    </div>
-  `);
-  view.querySelectorAll('[data-notice]').forEach(x=>x.addEventListener('click',()=>{
-    const n=state.adminNotifications.find(n=>n.id===x.dataset.notice);
-    if(!n)return;
-    n.read=true;save();
-    if(n.type==='birthday' && n.clientId){go('birthday',{clientId:n.clientId});return}
-    if(n.type==='service' && n.clientId){
-      const c=client(n.clientId);
-      go('mailing',{
-        clientId:n.clientId,reminderId:n.reminderId,
-        title:'Напоминание от T-CITY',
-        text:n.text.replace(`${c?.name||''} · `,'')
-      });
-      return;
+  const dateInput=document.getElementById('editDate'),durationInput=document.getElementById('editDuration'),timeSelect=document.getElementById('editTime');
+  const refreshSlots=()=>{
+    const date=dateInput.value,duration=Math.max(1,Math.min(8,Number(durationInput.value)||1));
+    const slots=[];
+    for(let h=10;h+duration<=21;h++){
+      const start=h,end=h+duration;
+      const occupied=state.bookings.some(x=>x.id!==b.id&&x.date===date&&['waiting','work','ready'].includes(x.status)&&(()=>{const sh=Number(String(x.time).slice(0,2)),eh=sh+Math.max(1,Number(x.duration)||1);return start<eh&&end>sh})());
+      if(!occupied)slots.push(`${String(h).padStart(2,'0')}:00`);
     }
-    renderNotifications();
-  }));
-  document.getElementById('markAll').addEventListener('click',()=>{state.adminNotifications.forEach(n=>n.read=true);save();renderNotifications()});
-  document.getElementById('clearNotices').addEventListener('click',()=>{if(confirm('Очистить историю уведомлений только в ADMIN?')){state.adminNotifications=[];save();renderNotifications()}});
-}
-
-
-
-/* ============================================================
-   T-CITY ADMIN v0.4 · REAL BACKEND BRIDGE
-   Existing visual/UI structure is preserved. Only the data layer
-   and actions below are connected to the T-CITY backend.
-   ============================================================ */
-const API_BASE='https://194-87-130-62.sslip.io';
-const ADMIN_SESSION_KEY='tcity_admin_session_v1';
-const ADMIN_PENDING_LOGIN_KEY='tcity_admin_pending_login_v1';
-let adminSession=sessionStorage.getItem(ADMIN_SESSION_KEY)||'';
-let backendReady=false;
-let loginPollTimer=null;
-
-function save(){ updateBell(); }
-function generateScheduledAlerts(){ /* server-backed in v0.4 */ }
-async function resetDemo(){ await refreshState(true); }
-
-async function api(path,options={}){
-  const headers=new Headers(options.headers||{});
-  if(options.body && !headers.has('Content-Type')) headers.set('Content-Type','application/json');
-  if(adminSession) headers.set('Authorization',`Bearer ${adminSession}`);
-  const response=await fetch(API_BASE+path,{...options,headers});
-  let data=null;
-  try{ data=await response.json(); }catch(_){ data={ok:false,error:`HTTP ${response.status}`}; }
-  if(response.status===401){
-    adminSession='';sessionStorage.removeItem(ADMIN_SESSION_KEY);backendReady=false;
-  }
-  if(!response.ok || data?.ok===false){
-    const err=new Error(data?.error||`HTTP ${response.status}`);err.status=response.status;err.data=data;throw err;
-  }
-  return data;
-}
-function jsonBody(value){return JSON.stringify(value)}
-function safeDate(v){return v?String(v).slice(0,10):''}
-function isoPartsTyumen(v){
-  const d=new Date(v);
-  const a=new Intl.DateTimeFormat('en-CA',{timeZone:T_CITY_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d).reduce((o,x)=>{o[x.type]=x.value;return o},{});
-  return {date:`${a.year}-${a.month}-${a.day}`,time:`${a.hour}:${a.minute}`};
-}
-function imageForCar(row){
-  if(row.image_url) return row.image_url;
-  const byPlate={
-    'А073СН172':'garage-passat.png','А937ХУ172':'garage-mercedes-cls-amg.png',
-    'У409МО72':'garage-polo.png','В620ОК172':'garage-lada-2112.png','В500ОР72':'garage-mercedes-cls.png'
+    if(!slots.length){timeSelect.innerHTML='<option value="">Нет свободных окон</option>';return}
+    const preferred=slots.includes(b.time)?b.time:slots[0];
+    timeSelect.innerHTML=slots.map(t=>`<option value="${t}" ${t===preferred?'selected':''}>${t}</option>`).join('');
   };
-  return byPlate[row.plate]||'';
-}
-function mapCar(row){
-  return {id:row.id,name:row.make_model||'Автомобиль',plate:row.plate||'—',color:row.color||'—',year:row.year??'—',mileage:row.mileage!=null?`${new Intl.NumberFormat('ru-RU').format(row.mileage)} км`:'—',vin:row.vin||'—',image:imageForCar(row)};
-}
-function mapBonus(data){
-  const tx=(data.history||[]).map(x=>({id:x.id,type:x.type,amount:Number(x.amount)||0,title:x.description||'T-Бонусы',date:safeDate(x.created_at)}));
-  return {balance:Number(data.balance)||0,earnedTotal:tx.filter(x=>x.type==='credit').reduce((s,x)=>s+x.amount,0),spentTotal:tx.filter(x=>x.type==='debit').reduce((s,x)=>s+x.amount,0),transactions:tx};
-}
-async function hydrateState(){
-  const [cl,bookings,notices,support,entries,allTime,reminders,birthdays,accountSummary]=await Promise.all([
-    api('/api/admin/clients'),api('/api/admin/bookings'),api('/api/admin/notifications'),api('/api/admin/support'),
-    api('/api/admin/accounting/entries'),api('/api/admin/stats/all-time'),api('/api/admin/reminders'),api('/api/admin/birthdays'),api('/api/admin/accounting/summary')
-  ]);
-  const detailPairs=await Promise.all((cl.clients||[]).map(async base=>{
-    const [d,b]=await Promise.all([api(`/api/admin/clients/${base.id}`),api(`/api/admin/clients/${base.id}/bonuses`)]);
-    return [base,d,b];
-  }));
-  const reminderRows=reminders.reminders||[];
-  const clients=detailPairs.map(([base,d,b])=>{
-    const c=d.client||base;
-    const cars=(d.cars||[]).map(mapCar);
-    const visits=(d.visits||[]).map(v=>({id:v.id,date:safeDate(v.completed_at),car:v.make_model||cars.find(x=>x.id===v.car_id)?.name||'Автомобиль',services:'Визит T-CITY',price:Number(v.total_rub)||0}));
-    const prefs=(d.preferences||[]).map(x=>({key:x.name,value:x.value}));
-    return {
-      id:c.id,name:[c.first_name,c.last_name].filter(Boolean).join(' ')||c.telegram_username||'Клиент',phone:c.phone||'—',
-      telegram:c.telegram_username?`@${String(c.telegram_username).replace(/^@/,'')}`:'—',notes:c.internal_note||'',birthday:safeDate(c.birthday),vip:Boolean(c.vip),
-      preferences:prefs,cars,visits,notifications:[],wallet:mapBonus(b),
-      serviceReminders:reminderRows.filter(r=>r.client_id===c.id).map(r=>{const z=isoPartsTyumen(r.remind_at);return {id:r.id,date:z.date,text:r.message,carId:r.car_id||null,adminAlerted:Boolean(r.sent)}})
-    };
-  });
-  const carLookup=new Map();clients.forEach(c=>(c.cars||[]).forEach(car=>carLookup.set(car.id,{c,car})));
-  const mappedBookings=(bookings.bookings||[]).map(b=>{
-    const z=isoPartsTyumen(b.starts_at);const hit=carLookup.get(b.car_id);
-    return {id:b.id,clientId:b.client_id,carId:b.car_id,date:z.date,time:z.time,duration:Math.max(1,Math.round((Number(b.duration_minutes)||60)/60)),status:b.status,serviceIds:[],total:Number(b.preliminary_total_rub)||0,bonusUse:Number(b.bonus_spent)||0,comment:b.comment||'',server:b,carName:b.make_model,plate:b.plate,clientName:[b.first_name,b.last_name].filter(Boolean).join(' ')};
-  });
-  const noticeRows=(notices.notifications||[]).map(n=>({id:n.id,type:n.type||'notice',title:n.title,text:n.message||'',date:n.created_at,read:Boolean(n.read_at),clientId:n.client_id||null,bookingId:n.booking_id||null}));
-  (birthdays.birthdays||[]).forEach(b=>noticeRows.unshift({id:`birthday-live-${b.id}-${b.when_is}`,type:'birthday',title:b.when_is==='today'?'Сегодня день рождения':'Завтра день рождения',text:`${[b.first_name,b.last_name].filter(Boolean).join(' ')} · ${b.when_is==='today'?'поздравить сегодня':'подготовить поздравление'}`,date:new Date().toISOString(),read:false,clientId:b.id,virtual:true}));
-  const supportChats=await Promise.all((support.threads||[]).map(async t=>{
-    const d=await api(`/api/admin/support/${t.id}`);
-    return {id:t.id,clientId:t.client_id,unread:Boolean(t.requires_admin),escalated:Boolean(t.requires_admin),messages:(d.messages||[]).map(m=>({side:m.sender==='client'?'client':'admin',text:m.message,time:new Date(m.created_at).toLocaleTimeString('ru-RU',{timeZone:T_CITY_TIMEZONE,hour:'2-digit',minute:'2-digit'})}))};
-  }));
-  const visitIncome=clients.flatMap(c=>(c.visits||[]).map(v=>({id:`visit-${v.id}`,date:v.date,type:'income',title:v.car||'Завершённый визит',amount:Number(v.price)||0,readonly:true})));
-  const manual=(entries.entries||[]).map(e=>({id:e.id,date:safeDate(e.created_at),type:e.type,title:e.description||e.category||'Операция',amount:Number(e.amount_rub)||0,server:true}));
-  state={clients,bookings:mappedBookings,completedBookings:[],adminNotifications:noticeRows,supportChats,transactions:[...visitIncome,...manual],allTimeStats:allTime.stats||null,accountingSummary:accountSummary.accounting||null};
-  backendReady=true;updateBell();
-}
-async function refreshState(redraw=false){
-  try{await hydrateState();if(redraw)render();}
-  catch(err){console.error(err);if(err.status===401){showLogin('Сессия истекла. Подтвердите вход через Telegram.');return}alert(`Ошибка сервера: ${err.message}`)}
-}
-function showLogin(message='Войдите как владелец T-CITY через Telegram.'){
-  topTitle.textContent='T-CITY ADMIN';backBtn.style.visibility='hidden';bellBtn.style.visibility='hidden';
-  view.innerHTML=`<div class="login-gate"><div class="login-card"><div class="eyebrow">ЗАЩИЩЁННЫЙ ДОСТУП</div><h1 class="h1">T-CITY ADMIN</h1><p class="lead">${message}</p><button class="action primary" id="adminLogin">ПОДТВЕРДИТЬ В TELEGRAM</button><div class="login-status" id="loginStatus">Доступ разрешается только Telegram ID владельца, указанному на сервере.</div><div class="server-badge">T-CITY BACKEND</div></div></div>`;
-  document.getElementById('adminLogin').addEventListener('click',startAdminLogin);
-}
-async function startAdminLogin(){
-  const btn=document.getElementById('adminLogin'),status=document.getElementById('loginStatus');if(btn)btn.disabled=true;
-  try{
-    const d=await api('/api/auth/browser/start',{method:'POST'});sessionStorage.setItem(ADMIN_PENDING_LOGIN_KEY,d.token);
-    if(status)status.textContent='Telegram открыт. Нажмите «Запустить» у T-CITY и вернитесь сюда.';
-    const w=window.open(d.telegram_link,'_blank');if(!w) location.href=d.telegram_link;
-    pollAdminLogin(d.token);
-  }catch(err){if(status)status.textContent=`Ошибка: ${err.message}`;if(btn)btn.disabled=false}
-}
-function pollAdminLogin(token){
-  clearInterval(loginPollTimer);let tries=0;
-  loginPollTimer=setInterval(async()=>{
-    if(++tries>280){clearInterval(loginPollTimer);return}
+  refreshSlots();dateInput.addEventListener('change',refreshSlots);durationInput.addEventListener('input',refreshSlots);
+  document.getElementById('closeSheet').addEventListener('click',closeSheet);
+  document.getElementById('saveBookingEdit').addEventListener('click',async()=>{
+    const date=dateInput.value,time=timeSelect.value;
+    const durationHours=Math.max(1,Math.min(8,Number(durationInput.value)||1));
+    const total=Math.max(0,Math.round(Number(document.getElementById('editTotal').value)||0));
+    const selected=[...sheet.querySelectorAll('[data-edit-service]:checked')].map(el=>choices[Number(el.dataset.editService)]).filter(Boolean);
+    const services=selected.map(x=>({name:x.name,price_rub:Math.max(0,Math.round(Number(x.price)||0))}));
+    if(!date||!time){alert('На выбранную дату нет свободного окна для этой длительности.');return}
     try{
-      const st=await api(`/api/auth/browser/status/${encodeURIComponent(token)}`);
-      if(st.confirmed){
-        clearInterval(loginPollTimer);
-        const ex=await api('/api/auth/browser/exchange',{method:'POST',body:jsonBody({token})});
-        adminSession=ex.session_token||'';sessionStorage.setItem(ADMIN_SESSION_KEY,adminSession);sessionStorage.removeItem(ADMIN_PENDING_LOGIN_KEY);
-        bellBtn.style.visibility='visible';await hydrateState();route={name:'home',params:{}};historyStack=[];render();
-      }
-    }catch(err){console.error(err)}
-  },1500);
+      await api(`/api/admin/bookings/${b.id}`,{method:'PATCH',body:jsonBody({starts_at:`${date}T${time}:00+05:00`,duration_minutes:Math.round(durationHours*60),preliminary_total_rub:total,bonus_spent:Math.min(Number(b.bonusUse)||0,total),comment:document.getElementById('editComment').value.trim(),services})});
+      closeSheet();await refreshState();renderBooking();
+    }catch(err){alert(err.status===409?'Это окно уже занято. Выберите другое время.':err.message)}
+  });
 }
-async function bootRealAdmin(){
-  updateClock();setInterval(updateClock,1000);
-  if(adminSession){
-    try{await hydrateState();bellBtn.style.visibility='visible';render();return}catch(err){console.error(err);adminSession='';sessionStorage.removeItem(ADMIN_SESSION_KEY)}
-  }
-  showLogin();
-  const pending=sessionStorage.getItem(ADMIN_PENDING_LOGIN_KEY);if(pending)pollAdminLogin(pending);
-}
-
-/* Real booking actions */
-function renderBooking(){
-  const b=state.bookings.find(x=>x.id===route.params.id);if(!b){go('calendar',{},false);return}
-  const c=bookingClient(b),car=bookingCar(b);
-  shell('ЗАПИСЬ',`
-    <div class="eyebrow">${fmtDate(b.date)} · ${b.time}</div><h1 class="h1">${car?.name||b.carName||'АВТОМОБИЛЬ'}</h1><p class="lead">${c?.name||b.clientName||'—'} · ${car?.plate||b.plate||'—'}</p>
-    <div class="toolbar">${['waiting','work','ready'].map(s=>`<button class="action small ${b.status===s?'primary':''}" data-status="${s}">${STATUS[s].name}</button>`).join('')}</div>
-    <div class="section-title">ИНФОРМАЦИЯ</div><div class="kv">
-      <div class="kv-row"><span>Клиент</span><span>${c?.name||'—'}</span></div><div class="kv-row"><span>Телефон</span><span>${c?.phone||'—'}</span></div>
-      <div class="kv-row"><span>Автомобиль</span><span>${car?.name||b.carName||'—'}</span></div><div class="kv-row"><span>Госномер</span><span>${car?.plate||b.plate||'—'}</span></div>
-      <div class="kv-row"><span>Дата / время</span><span>${fmtDate(b.date)} · ${b.time}</span></div><div class="kv-row"><span>Услуги</span><span>${servicesText(b)}</span></div>
-      <div class="kv-row"><span>Стоимость</span><span>${money(b.total)}</span></div><div class="kv-row"><span>T-Бонусы к списанию</span><span>${Number(b.bonusUse)>0?`${new Intl.NumberFormat('ru-RU').format(b.bonusUse)} T`:'—'}</span></div>
-      <div class="kv-row"><span>Комментарий</span><span>${b.comment||'—'}</span></div></div>
-    <div class="rule"></div><div class="section-title">ПРЕДПОЧТЕНИЯ КЛИЕНТА</div><div class="kv">${(c?.preferences||[]).map(p=>`<div class="kv-row"><span>${p.key}</span><span>${p.value}</span></div>`).join('')||'<div class="empty">Предпочтений пока нет.</div>'}</div>
-    ${b.status==='ready'?`<div class="finalize-box"><strong>АВТОМОБИЛЬ ВЫДАН?</strong><span>После завершения сервер создаст визит и рассчитает T-Бонусы.</span></div><button class="action primary" id="finishVisit">ЗАВЕРШИТЬ ВИЗИТ</button>`:''}
-    <div class="toolbar"><button class="action" id="editBooking">ИЗМЕНИТЬ / ПЕРЕНЕСТИ</button><button class="action danger" id="cancelBooking">ОТМЕНИТЬ ЗАПИСЬ</button></div>`);
-  view.querySelectorAll('[data-status]').forEach(x=>x.addEventListener('click',async()=>{
-    if(x.dataset.status===b.status)return;
-    try{await api(`/api/admin/bookings/${b.id}/status`,{method:'PATCH',body:jsonBody({status:x.dataset.status})});await refreshState();renderBooking()}catch(err){alert(err.message)}
-  }));
-  const f=document.getElementById('finishVisit');if(f)f.addEventListener('click',()=>finalizeVisit(b));
-  document.getElementById('editBooking').addEventListener('click',()=>openBookingEditor(b));
-  document.getElementById('cancelBooking').addEventListener('click',async()=>{if(!confirm('Отменить эту запись? Время будет освобождено.'))return;try{await api(`/api/admin/bookings/${b.id}/status`,{method:'PATCH',body:jsonBody({status:'cancelled'})});await refreshState();back()}catch(err){alert(err.message)}});
-}
-async function finalizeVisit(b){
-  if(!confirm('Завершить визит? Автомобиль будет считаться выданным клиенту.'))return;
-  try{
-    const r=await api(`/api/admin/bookings/${b.id}/finish`,{method:'POST',body:jsonBody({final_total_rub:Number(b.total)||0,bonus_spent:Number(b.bonusUse)||0})});
-    await refreshState();openSheet(`<div class="sheet-head"><h3>ВИЗИТ ЗАВЕРШЁН</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="kv"><div class="kv-row"><span>Итого</span><span>${money(r.final_total_rub)}</span></div><div class="kv-row"><span>Оплата рублями</span><span>${money(r.cash_paid_rub)}</span></div><div class="kv-row"><span>Списано T-Бонусов</span><span>${r.bonus_spent||0} T</span></div><div class="kv-row"><span>Начислено 5%</span><span>+${r.bonus_earned||0} T</span></div></div><button class="action primary" id="finishToHome">ГОТОВО</button>`);document.getElementById('closeSheet').addEventListener('click',()=>{closeSheet();go('home',{},false)});document.getElementById('finishToHome').addEventListener('click',()=>{closeSheet();go('home',{},false)});
-  }catch(err){alert(err.message)}
-}
-function openBookingEditor(){alert('Перенос и изменение состава записи подключим к серверу следующим блоком. Остальная запись уже работает с реальной базой.');}
 
 /* Real client profile */
 function renderClientMain(c,box){
   const total=(c.visits||[]).reduce((s,v)=>s+(Number(v.price)||0),0);
   box.innerHTML=`<div class="metrics"><div class="metric"><strong>${(c.visits||[]).length}</strong><span>посещений</span></div><div class="metric"><strong>${money(total)}</strong><span>за всё время</span></div></div>
-    <div class="field"><label>Имя</label><input id="cName" value="${c.name}" readonly></div><div class="readonly-note">Имя берётся из Telegram-профиля клиента.</div>
+    <div class="field"><label>Имя</label><input id="cName" value="${c.name}"></div>
     <div class="field"><label>Телефон</label><input id="cPhone" value="${c.phone||'—'}"></div><div class="field"><label>Telegram</label><input id="cTelegram" value="${c.telegram||'—'}" readonly></div>
     <div class="field"><label>Дата рождения</label><input type="date" id="cBirthday" value="${c.birthday||''}"></div><label class="vip-switch"><span>VIP · выдаётся только вручную владельцем T-CITY</span><input type="checkbox" id="cVip" ${c.vip?'checked':''}></label>
     <div class="field"><label>Внутренняя заметка T-CITY · клиент её не видит</label><textarea id="cNotes">${c.notes||''}</textarea></div>
     <div class="bonus-admin-card"><div class="bonus-admin-head"><span class="bonus-admin-coin"><img src="tcity-logo-final.png" alt=""></span><span><strong>T-Бонусы</strong><small>Внутренний баланс клиента</small></span><span class="bonus-admin-balance">${new Intl.NumberFormat('ru-RU').format(ensureWallet(c).balance)} T</span></div><div class="toolbar"><button class="action small" id="bonusCredit">+ НАЧИСЛИТЬ</button><button class="action small" id="bonusDebit">− СПИСАТЬ</button></div><div class="bonus-admin-history">${ensureWallet(c).transactions.slice(0,4).map(tx=>`<div class="bonus-admin-tx"><span><strong>${tx.title}</strong><small>${fmtDate(tx.date)}</small></span><span>${tx.type==='credit'?'+':'−'}${new Intl.NumberFormat('ru-RU').format(tx.amount)} T</span></div>`).join('')||'<div class="mini-note">Операций пока нет.</div>'}</div></div>
-    <button class="action" id="saveClient">СОХРАНИТЬ ИЗМЕНЕНИЯ</button><button class="action primary" id="personalNotice">ОТПРАВИТЬ УВЕДОМЛЕНИЕ</button>`;
-  document.getElementById('saveClient').addEventListener('click',async()=>{try{await api(`/api/admin/clients/${c.id}`,{method:'PATCH',body:jsonBody({phone:document.getElementById('cPhone').value.trim()==='—'?null:document.getElementById('cPhone').value.trim(),birthday:document.getElementById('cBirthday').value||null,vip:document.getElementById('cVip').checked,internal_note:document.getElementById('cNotes').value.trim()})});await refreshState();renderClient()}catch(err){alert(err.message)}});
+    <button class="action" id="saveClient">СОХРАНИТЬ ИЗМЕНЕНИЯ</button><button class="action primary" id="personalNotice">ОТПРАВИТЬ УВЕДОМЛЕНИЕ</button><button class="action danger" id="deleteClient">УДАЛИТЬ КЛИЕНТА</button>`;
+  document.getElementById('saveClient').addEventListener('click',async()=>{try{const name=document.getElementById('cName').value.trim();if(!name){alert('Имя не может быть пустым.');return}await api(`/api/admin/clients/${c.id}`,{method:'PATCH',body:jsonBody({name,phone:document.getElementById('cPhone').value.trim()==='—'?null:document.getElementById('cPhone').value.trim(),birthday:document.getElementById('cBirthday').value||null,vip:document.getElementById('cVip').checked,internal_note:document.getElementById('cNotes').value.trim()})});await refreshState();renderClient()}catch(err){alert(err.message)}});
   document.getElementById('personalNotice').addEventListener('click',()=>go('mailing',{clientId:c.id}));document.getElementById('bonusCredit').addEventListener('click',()=>openBonusAdjust(c,'credit'));document.getElementById('bonusDebit').addEventListener('click',()=>openBonusAdjust(c,'debit'));
+  document.getElementById('deleteClient').addEventListener('click',async()=>{if(!confirm(`Удалить клиента «${c.name}»? Будут удалены его автомобили, записи, история, бонусы, уведомления и чат поддержки. Это действие нельзя отменить.`))return;try{await api(`/api/admin/clients/${c.id}`,{method:'DELETE'});await refreshState();go('clients',{},false)}catch(err){alert(err.message)}});
 }
 function openBonusAdjust(c,type){
   openSheet(`<div class="sheet-head"><h3>${type==='credit'?'НАЧИСЛИТЬ T-БОНУСЫ':'СПИСАТЬ T-БОНУСЫ'}</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Количество</label><input type="number" min="1" id="bonusAmount"></div><div class="field"><label>Причина</label><input id="bonusReason" placeholder="${type==='credit'?'Подарок / компенсация / акция':'Оплата / корректировка'}"></div><button class="action primary" id="saveBonusAdjust">${type==='credit'?'НАЧИСЛИТЬ':'СПИСАТЬ'}</button>`);
@@ -1620,7 +966,7 @@ async function imageFileData(file){
   if(!file)return null;const img=await new Promise((res,rej)=>{const i=new Image(),r=new FileReader();r.onload=()=>{i.onload=()=>res(i);i.onerror=rej;i.src=r.result};r.onerror=rej;r.readAsDataURL(file)});const max=1000,scale=Math.min(1,max/Math.max(img.width,img.height)),canvas=document.createElement('canvas');canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);return canvas.toDataURL('image/jpeg',.78);
 }
 function openCarEditor(c,car){
-  openSheet(`<div class="sheet-head"><h3>${car?'ИЗМЕНИТЬ АВТО':'ДОБАВИТЬ АВТО'}</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Марка / модель</label><input id="carName" value="${car?.name||''}"></div><div class="field"><label>Госномер</label><input id="carPlate" value="${car?.plate||''}"></div><div class="inline2"><div class="field"><label>Цвет</label><input id="carColor" value="${car?.color||''}"></div><div class="field"><label>Год</label><input id="carYear" value="${car?.year==='—'?'':car?.year||''}"></div></div><div class="field"><label>Пробег</label><input id="carMileage" value="${String(car?.mileage||'').replace(/[^0-9]/g,'')}"></div><div class="field"><label>VIN</label><input id="carVin" value="${car?.vin==='—'?'':car?.vin||''}"></div><div class="field"><label>Готовая моделька T-CITY · PNG/JPG</label><input type="file" accept="image/*" id="carImage"></div><div class="mini-note">Изображение перед отправкой автоматически уменьшается для тестового backend.</div><button class="action primary" id="saveCar">СОХРАНИТЬ</button>`);
+  openSheet(`<div class="sheet-head"><h3>${car?'ИЗМЕНИТЬ АВТО':'ДОБАВИТЬ АВТО'}</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Марка / модель</label><input id="carName" value="${car?.name||''}"></div><div class="field"><label>Госномер</label><input id="carPlate" value="${car?.plate||''}"></div><div class="inline2"><div class="field"><label>Цвет</label><input id="carColor" value="${car?.color||''}"></div><div class="field"><label>Год</label><input id="carYear" value="${car?.year==='—'?'':car?.year||''}"></div></div><div class="field"><label>Пробег</label><input id="carMileage" value="${String(car?.mileage||'').replace(/[^0-9]/g,'')}"></div><div class="field"><label>VIN</label><input id="carVin" value="${car?.vin==='—'?'':car?.vin||''}"></div><div class="field"><label>Готовая моделька T-CITY · PNG/JPG</label><input type="file" accept="image/*" id="carImage"></div><div class="mini-note">Изображение перед отправкой автоматически оптимизируется для быстрой загрузки.</div><button class="action primary" id="saveCar">СОХРАНИТЬ</button>`);
   document.getElementById('closeSheet').addEventListener('click',closeSheet);document.getElementById('saveCar').addEventListener('click',async()=>{try{const file=document.getElementById('carImage').files[0],image_url=file?await imageFileData(file):(car?.image?.startsWith('data:')?car.image:null);const payload={make_model:document.getElementById('carName').value.trim()||'Автомобиль',plate:document.getElementById('carPlate').value.trim()||null,color:document.getElementById('carColor').value.trim()||null,year:Number(document.getElementById('carYear').value)||null,mileage:Number(document.getElementById('carMileage').value)||null,vin:document.getElementById('carVin').value.trim()||null};if(image_url)payload.image_url=image_url;if(car)await api(`/api/admin/cars/${car.id}`,{method:'PATCH',body:jsonBody(payload)});else await api(`/api/admin/clients/${c.id}/cars`,{method:'POST',body:jsonBody(payload)});closeSheet();await refreshState();if(car)renderClientCar();else{route.params.tab='cars';renderClient()}}catch(err){alert(err.message)}});
 }
 function deleteClientCar(c,car){
@@ -1635,7 +981,10 @@ function renderClientReminders(c,box){
   document.getElementById('addReminder').addEventListener('click',async()=>{const date=document.getElementById('reminderDate').value,text=document.getElementById('reminderText').value.trim();if(!date||!text)return;try{await api('/api/admin/reminders',{method:'POST',body:jsonBody({client_id:c.id,remind_at:`${date}T10:00:00+05:00`,message:text})});await refreshState();renderClientReminders(client(c.id),box)}catch(err){alert(err.message)}});
   box.querySelectorAll('[data-remove-reminder]').forEach(btn=>btn.addEventListener('click',async()=>{try{await api(`/api/admin/reminders/${btn.dataset.removeReminder}/sent`,{method:'PATCH'});await refreshState();renderClientReminders(client(c.id),box)}catch(err){alert(err.message)}}));
 }
-function renderAddClient(){shell('ДОБАВИТЬ КЛИЕНТА',`<div class="eyebrow">СЕРВЕРНЫЙ РЕЖИМ</div><h1 class="h1">НОВЫЙ КЛИЕНТ</h1><p class="lead">В текущей тестовой схеме профиль создаётся автоматически по Telegram ID при первом входе клиента. Ручное создание профиля из ADMIN подключим отдельным маршрутом.</p><button class="action primary" id="backClients">К КЛИЕНТАМ</button>`);document.getElementById('backClients').addEventListener('click',()=>go('clients',{},false));}
+function renderAddClient(){
+  shell('ДОБАВИТЬ КЛИЕНТА',`<div class="eyebrow">БАЗА КЛИЕНТОВ</div><h1 class="h1">НОВЫЙ КЛИЕНТ</h1><p class="lead">Создайте карточку вручную. Telegram привяжется позже, если клиент войдёт через него.</p><div class="field"><label>Имя</label><input id="newName"></div><div class="field"><label>Телефон</label><input id="newPhone"></div><div class="field"><label>Дата рождения</label><input type="date" id="newBirthday"></div><label class="vip-switch"><span>VIP</span><input type="checkbox" id="newVip"></label><button class="action primary" id="createClientReal">СОЗДАТЬ КЛИЕНТА</button>`);
+  document.getElementById('createClientReal').addEventListener('click',async()=>{const name=document.getElementById('newName').value.trim().replace(/\s+/g,' ');if(!name){alert('Укажите имя клиента.');return}const parts=name.split(' '),first_name=parts.shift(),last_name=parts.join(' ')||null;try{await api('/api/admin/clients',{method:'POST',body:jsonBody({first_name,last_name,phone:document.getElementById('newPhone').value.trim()||null,birthday:document.getElementById('newBirthday').value||null,vip:document.getElementById('newVip').checked})});await refreshState();go('clients',{},false)}catch(err){alert(err.message)}});
+}
 
 /* Support / mailing / accounting */
 function renderSupportChat(){
@@ -1654,6 +1003,68 @@ function renderNotifications(){shell('УВЕДОМЛЕНИЯ',`<div class="eyebr
   view.querySelectorAll('[data-notice]').forEach(x=>x.addEventListener('click',async()=>{const n=state.adminNotifications.find(n=>n.id===x.dataset.notice);if(!n)return;if(!n.virtual){try{await api(`/api/admin/notifications/${n.id}/read`,{method:'PATCH'})}catch(_){}}n.read=true;updateBell();if(n.type==='birthday'&&n.clientId){go('birthday',{clientId:n.clientId});return}renderNotifications()}));
   document.getElementById('markAll').addEventListener('click',async()=>{for(const n of state.adminNotifications.filter(x=>!x.read&&!x.virtual)){try{await api(`/api/admin/notifications/${n.id}/read`,{method:'PATCH'})}catch(_){}}await refreshState();renderNotifications()});
   document.getElementById('clearNotices').addEventListener('click',async()=>{if(!confirm('Очистить историю уведомлений только в ADMIN?'))return;for(const n of state.adminNotifications.filter(x=>!x.virtual)){try{await api(`/api/admin/notifications/${n.id}`,{method:'DELETE'})}catch(_){}}await refreshState();renderNotifications()});
+}
+
+
+function catalogPriceInput(item){
+  const a=Number(item?.price_sedan)||0,b=Number(item?.price_crossover)||0,c=Number(item?.price_suv)||0;
+  return a===b&&b===c?String(a):`${a}/${b}/${c}`;
+}
+function catalogPriceLabel(item){
+  const a=Number(item?.price_sedan)||0,b=Number(item?.price_crossover)||0,c=Number(item?.price_suv)||0;
+  return a===b&&b===c?money(a):`${new Intl.NumberFormat('ru-RU').format(a)} / ${new Intl.NumberFormat('ru-RU').format(b)} / ${new Intl.NumberFormat('ru-RU').format(c)} ₽`;
+}
+function parseCatalogPrice(value){
+  const parts=String(value||'').split('/').map(x=>Number(String(x).replace(/\s/g,'')));
+  if(parts.length===1&&Number.isInteger(parts[0])&&parts[0]>=0)return {sedan:parts[0],crossover:parts[0],suv:parts[0]};
+  if(parts.length===3&&parts.every(x=>Number.isInteger(x)&&x>=0))return {sedan:parts[0],crossover:parts[1],suv:parts[2]};
+  return null;
+}
+function adminCarType(car){
+  const t=String(car?.bodyType||car?.name||'').toLowerCase();
+  if(t.includes('кроссов')||t.includes('crossover'))return 'crossover';
+  if(t.includes('внедорож')||t.includes('suv'))return 'suv';
+  return 'sedan';
+}
+function servicePriceForCar(s,car){
+  const type=adminCarType(car);return Number(s?.[`price_${type}`]??s?.prices?.[type]??s?.price_crossover??s?.price)||0;
+}
+function renderCatalog(){
+  const tab=route.params.tab||'services';
+  shell('УСЛУГИ И ЦЕНЫ',`<div class="eyebrow">CLIENT · ЕДИНЫЙ ПРАЙС</div><h1 class="h1">УСЛУГИ И ЦЕНЫ</h1><p class="lead">Все изменения здесь сразу используются клиентской версией. GitHub для изменения цены больше не нужен.</p><div class="tabs"><button class="tab ${tab==='services'?'active':''}" data-catalog-tab="services">УСЛУГИ</button><button class="tab ${tab==='packages'?'active':''}" data-catalog-tab="packages">ПАКЕТЫ</button></div><div id="catalogBody"></div>`);
+  view.querySelectorAll('[data-catalog-tab]').forEach(x=>x.addEventListener('click',()=>{route.params.tab=x.dataset.catalogTab;renderCatalog()}));
+  const box=document.getElementById('catalogBody');
+  if(tab==='packages')renderCatalogPackages(box);else renderCatalogServices(box);
+}
+function renderCatalogServices(box){
+  const rows=[...catalogState.services].sort((a,b)=>(Number(a.sort_order)||0)-(Number(b.sort_order)||0));
+  box.innerHTML=`<button class="action primary" id="addCatalogService">+ ДОБАВИТЬ УСЛУГУ</button><div class="catalog-list">${rows.map(s=>`<button class="catalog-row" data-catalog-service="${s.code}"><div class="catalog-row-top"><strong>${escapeHtmlAdmin(s.name)}</strong><span class="catalog-badges">${s.is_new?'<span class="catalog-pill new">NEW</span>':''}${s.popular?'<span class="catalog-pill popular">ПОПУЛЯРНО</span>':''}${!s.enabled?'<span class="catalog-pill off">ВЫКЛ</span>':''}</span></div><span class="catalog-meta">${catalogPriceLabel(s)}${!s.enabled?' · скрыта в CLIENT':''}</span></button>`).join('')||'<div class="empty">Услуг пока нет.</div>'}</div>`;
+  document.getElementById('addCatalogService').addEventListener('click',()=>openCatalogServiceEditor(null));
+  box.querySelectorAll('[data-catalog-service]').forEach(x=>x.addEventListener('click',()=>openCatalogServiceEditor(catalogState.services.find(s=>s.code===x.dataset.catalogService))));
+}
+function escapeHtmlAdmin(v){return String(v??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))}
+function openCatalogServiceEditor(item){
+  const creating=!item;
+  openSheet(`<div class="sheet-head"><h3>${creating?'НОВАЯ УСЛУГА':'ИЗМЕНИТЬ УСЛУГУ'}</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Название</label><input id="catalogServiceName" value="${escapeHtmlAdmin(item?.name||'')}" placeholder="Например: Сухой туман"></div><div class="field"><label>Цена · ₽</label><input id="catalogServicePrice" value="${item?catalogPriceInput(item):''}" placeholder="1000 или 1000/1200/1400"></div><div class="catalog-price-help">Одно число применяется ко всем кузовам. Три числа: седан / кроссовер / внедорожник.</div><label class="catalog-toggle"><span>ПОКАЗЫВАТЬ УСЛУГУ В CLIENT</span><input type="checkbox" id="catalogServiceEnabled" ${item?.enabled!==false?'checked':''}></label><label class="catalog-toggle"><span>ОТМЕТКА «ПОПУЛЯРНО»</span><input type="checkbox" id="catalogServicePopular" ${item?.popular?'checked':''}></label><button class="action primary" id="saveCatalogService">СОХРАНИТЬ</button>${creating?'':`<button class="action" id="announceCatalogService">РАССКАЗАТЬ КЛИЕНТАМ</button><button class="action danger" id="deleteCatalogService">УДАЛИТЬ УСЛУГУ</button>`}<div class="mini-note">Новая услуга автоматически получает отметку NEW на 7 дней. Изменение цены старой услуги не включает NEW заново.</div>`);
+  document.getElementById('closeSheet').addEventListener('click',closeSheet);
+  document.getElementById('saveCatalogService').addEventListener('click',async()=>{const name=document.getElementById('catalogServiceName').value.trim(),prices=parseCatalogPrice(document.getElementById('catalogServicePrice').value);if(!name){alert('Укажите название услуги.');return}if(!prices){alert('Цена: одно число или три числа через /. Например 1000 или 1000/1200/1400.');return}const body={name,price_sedan:prices.sedan,price_crossover:prices.crossover,price_suv:prices.suv,enabled:document.getElementById('catalogServiceEnabled').checked,popular:document.getElementById('catalogServicePopular').checked};try{if(creating)await api('/api/admin/catalog/services',{method:'POST',body:jsonBody(body)});else await api(`/api/admin/catalog/services/${encodeURIComponent(item.code)}`,{method:'PATCH',body:jsonBody(body)});closeSheet();await refreshState();renderCatalog()}catch(err){alert(err.message)}});
+  if(!creating){
+    document.getElementById('announceCatalogService').addEventListener('click',()=>{const name=document.getElementById('catalogServiceName').value.trim()||item.name,price=document.getElementById('catalogServicePrice').value.trim()||catalogPriceInput(item);closeSheet();go('mailing',{title:'Новая услуга T-CITY',text:`В T-CITY появилась новая услуга — ${name}. Стоимость: ${price.includes('/')?price.replaceAll('/',' / ')+' ₽':price+' ₽'}. Подробнее можно посмотреть в разделе «Услуги и цены».`})});
+    document.getElementById('deleteCatalogService').addEventListener('click',async()=>{if(!confirm(`Удалить услугу «${item.name}»? Из новых записей она исчезнет. История уже созданных записей сохранится.`))return;try{await api(`/api/admin/catalog/services/${encodeURIComponent(item.code)}`,{method:'DELETE'});closeSheet();await refreshState();renderCatalog()}catch(err){alert(err.message)}});
+  }
+}
+function renderCatalogPackages(box){
+  const rows=[...catalogState.packages].sort((a,b)=>(Number(a.sort_order)||0)-(Number(b.sort_order)||0));
+  box.innerHTML=`<div class="catalog-list">${rows.map(p=>`<button class="catalog-row" data-catalog-package="${p.code}"><div class="catalog-row-top"><strong>${escapeHtmlAdmin(p.name)}</strong><span class="arrow">→</span></div><span class="catalog-meta">${catalogPriceLabel(p)} · ${(p.included_service_codes||[]).length} услуг</span></button>`).join('')||'<div class="empty">Пакетов пока нет.</div>'}</div>`;
+  box.querySelectorAll('[data-catalog-package]').forEach(x=>x.addEventListener('click',()=>openCatalogPackageEditor(catalogState.packages.find(p=>p.code===x.dataset.catalogPackage))));
+}
+function openCatalogPackageEditor(item){
+  if(!item)return;
+  const included=new Set(item.included_service_codes||[]);
+  const services=[...catalogState.services].sort((a,b)=>(Number(a.sort_order)||0)-(Number(b.sort_order)||0));
+  openSheet(`<div class="sheet-head"><h3>ИЗМЕНИТЬ ПАКЕТ</h3><button class="sheet-close" id="closeSheet">×</button></div><div class="field"><label>Название</label><input id="catalogPackageName" value="${escapeHtmlAdmin(item.name)}"></div><div class="field"><label>Цена · ₽</label><input id="catalogPackagePrice" value="${catalogPriceInput(item)}" placeholder="1000 или 1000/1200/1400"></div><div class="catalog-price-help">Одно число — одинаковая цена. Три числа: седан / кроссовер / внедорожник.</div><div class="field"><label>Содержание пакета</label><div class="catalog-service-picks">${services.map(s=>`<label class="service-check"><input type="checkbox" data-package-service="${s.code}" ${included.has(s.code)?'checked':''}><span>${escapeHtmlAdmin(s.name)}${!s.enabled?' · ВЫКЛ':''}</span><em>${catalogPriceLabel(s)}</em></label>`).join('')}</div></div><button class="action primary" id="saveCatalogPackage">СОХРАНИТЬ ПАКЕТ</button>`);
+  document.getElementById('closeSheet').addEventListener('click',closeSheet);
+  document.getElementById('saveCatalogPackage').addEventListener('click',async()=>{const name=document.getElementById('catalogPackageName').value.trim(),prices=parseCatalogPrice(document.getElementById('catalogPackagePrice').value),codes=[...sheet.querySelectorAll('[data-package-service]:checked')].map(x=>x.dataset.packageService);if(!name){alert('Укажите название пакета.');return}if(!prices){alert('Цена: одно число или три числа через /.');return}try{await api(`/api/admin/catalog/packages/${encodeURIComponent(item.code)}`,{method:'PATCH',body:jsonBody({name,price_sedan:prices.sedan,price_crossover:prices.crossover,price_suv:prices.suv,included_service_codes:codes})});closeSheet();await refreshState();renderCatalog()}catch(err){alert(err.message)}});
 }
 
 bootRealAdmin();
